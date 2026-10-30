@@ -22,7 +22,12 @@ from livepeer_builder.contracts import (
     X402IntentIdentity,
     X402IntentRecord,
 )
-from livepeer_builder.errors import X402ChallengeMismatch, X402Refused, X402SignerUnknown
+from livepeer_builder.errors import (
+    NotFound,
+    X402ChallengeMismatch,
+    X402Refused,
+    X402SignerUnknown,
+)
 from livepeer_builder.services.x402 import X402PaymentProvider
 from livepeer_builder.testing import FixedClock, MemorySecretStore
 
@@ -350,9 +355,7 @@ async def test_a_failed_secret_write_leaves_the_intent_unknown() -> None:
     assert (record.state, record.payment_ref) == ("unknown", None)  # the secret write failed after dispatch
 
 
-def _seeded_allowed_record(
-    ident: X402IntentIdentity, payment_ref: SecretRef | None
-) -> X402IntentRecord:
+def _seeded_allowed_record(ident: X402IntentIdentity, payment_ref: SecretRef | None) -> X402IntentRecord:
     now = datetime.now(UTC)
     return X402IntentRecord(
         job_id=ident.job_id,
@@ -379,15 +382,16 @@ async def test_an_allowed_intent_without_a_secret_ref_stays_unknown() -> None:
     with pytest.raises(X402SignerUnknown):
         await provider.authorize(ident, challenge(), "cred-1")  # replays the held allowed intent
     record = repo.records[(ident.job_id, 1, 0)]
-    assert (record.state, record.payment_ref) == ("allowed", None)  # _settle refused to replay; state unchanged
+    assert (record.state, record.payment_ref) == (
+        "allowed",
+        None,
+    )  # _settle refused to replay; state unchanged
 
 
 async def test_a_missing_stored_payment_value_stays_unknown() -> None:
     repo = FakeIntentRepo()
     ident = identity()
-    repo.records[(ident.job_id, 1, 0)] = _seeded_allowed_record(
-        ident, SecretRef(ref="mem:missing")
-    )
+    repo.records[(ident.job_id, 1, 0)] = _seeded_allowed_record(ident, SecretRef(ref="mem:missing"))
     provider = X402PaymentProvider(FakeSigner(), repo, FixedClock(), MemorySecretStore())
     with pytest.raises(X402SignerUnknown):
         await provider.authorize(ident, challenge(), "cred-1")

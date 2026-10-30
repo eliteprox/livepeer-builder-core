@@ -275,7 +275,11 @@ def test_parse_challenge_rejects_bad_base64() -> None:
 
 
 def test_parse_challenge_rejects_wrong_version() -> None:
-    data = {"x402Version": 1, "resource": {"url": "http://127.0.0.1:8443/app"}, "accepts": [_valid_requirement()]}
+    data = {
+        "x402Version": 1,
+        "resource": {"url": "http://127.0.0.1:8443/app"},
+        "accepts": [_valid_requirement()],
+    }
     with pytest.raises(RunnerCallError):
         parse_x402_challenge(_b64_challenge(data), "http://127.0.0.1:8443")
 
@@ -294,31 +298,29 @@ def test_parse_challenge_rejects_no_valid_requirement() -> None:
 
 def test_select_requirement_skips_incomplete_entries() -> None:
     # an empty payTo is skipped
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no supported x402 requirement"):
         _select_requirement([{"x402": {"payTo": "", "asset": "0xasset", "maxAmount": "100"}}])
 
 
 def test_select_requirement_rejects_bad_amount() -> None:
-    with pytest.raises(ValueError):
-        _select_requirement(
-            [{"x402": {"payTo": "0xpay", "asset": "0xasset", "maxAmount": "not-a-number"}}]
-        )
+    with pytest.raises(ValueError, match="no supported x402 requirement"):
+        _select_requirement([{"x402": {"payTo": "0xpay", "asset": "0xasset", "maxAmount": "not-a-number"}}])
 
 
 def test_select_requirement_rejects_non_positive_amount() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no supported x402 requirement"):
         _select_requirement([{"x402": {"payTo": "0xpay", "asset": "0xasset", "maxAmount": "0"}}])
 
 
 def test_select_requirement_rejects_missing_scheme_or_network() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no supported x402 requirement"):
         _select_requirement(
             [{"x402": {"payTo": "0xpay", "asset": "0xasset", "maxAmount": "100", "scheme": ""}}]
         )
 
 
 def test_select_requirement_rejects_bad_timeout() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="no supported x402 requirement"):
         _select_requirement(
             [
                 {
