@@ -1,19 +1,22 @@
-"""The x402 media transport (ISS-68, PROTOTYPE.md): a standard HTTP/SSE client with an x402 interceptor.
+"""The x402 media transport (ISS-68, PROTOTYPE.md): a standard HTTP/SSE client with an x402 V2 interceptor.
 
-On a 402 from the runner it parses the standard x402 challenge (a distinct format from the legacy
-Livepeer-Payment format), delegates it to the caller-owned intent key through the ``X402Signer`` protocol,
-and attaches the returned ``Payment`` header to the retry. A lost or malformed signer reply raises
-``RunnerCallError`` with ``payment_unknown`` (D53): the job is ``uncertain`` and never fails over.
+On a 402 from the runner it decodes the standard x402 V2 ``PAYMENT-REQUIRED`` response header (base64
+JSON, ``x402Version = 2``), delegates the validated challenge to the ``X402PaymentAuthorizer`` (the
+provider boundary that owns the signer dispatch and the durable intent state, PROTOTYPE.md #2), and
+retries with the signed ``PAYMENT-SIGNATURE`` request header. A lost or malformed signer reply surfaces
+as ``RunnerCallError`` with ``payment_unknown`` (D53): the job is ``uncertain`` and never fails over.
 
 The transport is opt-in (``EngineSupply(transport=...)``): the default engine still ships
-``SdkRunnerTransport`` (adapters/sdk.py). The x402 provider, signer and intent repo are wired by the
-runtime layer (runtime/assembly.py), which may import services and adapters.
+``SdkRunnerTransport`` (adapters/sdk.py). The x402 provider is built in the runtime layer; the signer is
+supplied explicitly (no HTTP signer, no LPB_SIGNER_URL auto-wiring) — tests supply a fake signer.
 """
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator
 from decimal import Decimal, InvalidOperation
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -27,35 +30,92 @@ from livepeer_builder.contracts import (
     X402IntentIdentity,
 )
 from livepeer_builder.errors import RunnerCallError, X402Refused, X402SignerUnknown
-from livepeer_builder.protocols import OnSigned, X402Signer
+from livepeer_builder.protocols import OnSigned, X402PaymentAuthorizer
 
 
-def parse_x402_challenge(body: bytes, runner_url: str) -> X402Challenge:
-    """Parse the standard x402 402 body. ``amount`` is in the asset's atomic units. ``origin`` is the host
-    of the URL that challenged, so the authorization stays bound to it. A body without the shape fails the
-    call before the signer is asked (nothing is signed)."""
-    try:
-        data = json.loads(body)
-        x402 = data["x402"]
-        accepts = x402.get("accepts") or []
-        if not accepts:
-            raise ValueError("x402 challenge carries no accepts")
-        inner = accepts[0].get("x402") or {}
-        payload = inner.get("payload") or {}
-        return X402Challenge(
-            origin=_origin(runner_url),
-            pay_to=str(payload.get("payTo", "")),
-            asset=str(payload.get("asset", "")),
-            amount=Decimal(str(payload.get("amount", "0"))),
-            nonce=str(payload.get("nonce", "")),
-            response_format=str(inner.get("responseFormat", "x402")),
-            exchange=str(inner.get("exchange", "ethereum")),
-            min_fee=Decimal(str(payload.get("minGasPrice", 0))),
-        )
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError, InvalidOperation) as error:
+def parse_x402_challenge(pay_required: str | None, runner_url: str) -> X402Challenge:
+    """Decode the x402 V2 ``PAYMENT-REQUIRED`` response header (base64 JSON).
+
+    Requires ``x402Version == 2``, a valid ``resource.url``, and one explicitly selected, fully-populated
+    requirement (scheme, CAIP-2 network, positive integer atomic-unit amount, non-empty asset/payTo,
+    positive ``maxTimeoutSeconds``, complete ``extra``). Malformed or oversized input, an unsupported
+    version, or an unsafe or mismatched origin/resource fails the call before the signer is asked
+    (nothing is signed)."""
+    if not pay_required:
         raise RunnerCallError(
-            "http", f"invalid x402 challenge from {runner_url}", status_code=402, payment_sent=False
+            "payment",
+            f"the 402 from {runner_url} carries no PAYMENT-REQUIRED header",
+            payment_sent=False,
+        )
+    try:
+        raw = base64.b64decode(pay_required)
+        data = json.loads(raw)
+        version = data.get("x402Version")
+        if version != 2:
+            raise ValueError(f"x402Version must be 2, got {version!r}")
+        resource = data.get("resource") or {}
+        resource_url = str(resource.get("url", ""))
+        if not _valid_url(resource_url):
+            raise ValueError("the x402 challenge resource.url is missing or invalid")
+        accepts = data.get("accepts") or []
+        requirement = _select_requirement(accepts)
+        extra = data.get("extra") or {}
+        return X402Challenge(
+            x402_version=2,
+            origin=_origin(runner_url),
+            pay_to=str(requirement["payTo"]),
+            asset=str(requirement["asset"]),
+            amount=Decimal(str(requirement["maxAmount"])),
+            nonce=str(data.get("nonce", "")),
+            resource_url=resource_url,
+            scheme=str(requirement.get("scheme", "")),
+            network=str(requirement.get("network", "")),
+            max_timeout_seconds=int(requirement.get("maxTimeoutSeconds", 300)),
+            extra=dict(extra),
+        )
+    except (ValueError, InvalidOperation) as error:
+        raise RunnerCallError(
+            "payment",
+            f"invalid x402 PAYMENT-REQUIRED challenge from {runner_url}",
+            payment_sent=False,
         ) from error
+
+
+def _select_requirement(accepts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Explicitly select a supported requirement from ``accepts``: the first entry with a complete, valid
+    requirement, not an arbitrary first item with zero/empty defaults."""
+    for entry in accepts:
+        candidate = entry.get("x402")
+        requirement: dict[str, Any] = candidate or entry
+        pay_to = str(requirement.get("payTo", ""))
+        asset = str(requirement.get("asset", ""))
+        amount_raw = requirement.get("maxAmount")
+        if not pay_to or not asset or amount_raw in (None, "", 0, "0"):
+            continue
+        try:
+            amount = Decimal(str(amount_raw))
+        except InvalidOperation:
+            continue
+        if amount <= 0:
+            continue
+        if not requirement.get("scheme") or not str(requirement.get("network", "")):
+            continue
+        timeout = requirement.get("maxTimeoutSeconds", 300)
+        try:
+            if int(timeout) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        return requirement
+    raise ValueError("no supported x402 requirement")
+
+
+def _valid_url(url: str) -> bool:
+    """A valid http(s) URL with a host."""
+    if not url:
+        return False
+    parts = urlsplit(url)
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
 
 
 def _origin(url: str) -> str:
@@ -73,13 +133,17 @@ def _origin(url: str) -> str:
 
 class X402RunnerTransport:
     """The x402 media transport (PROTOTYPE.md #2): sends the request through httpx, pays the 402 through the
-    ``X402Signer``, and streams the answer."""
+    ``X402PaymentAuthorizer``, and streams the answer.
 
-    def __init__(self, signer: X402Signer, max_challenge_retries: int = 3) -> None:
-        self._signer = signer
+    The legacy ``call``/``open`` signatures stay documented; the intent-aware ``call_with_intent`` /
+    ``open_with_intent`` (protocols.IntentAwareTransport) carry the caller-owned key (ISS-68 review,
+    priority A). Without the key the transport fails loudly instead of minting one (PROTOTYPE.md #3.1)."""
+
+    def __init__(self, authorizer: X402PaymentAuthorizer, max_challenge_retries: int = 3) -> None:
+        self._authorizer = authorizer
         self._max_retries = max_challenge_retries
 
-    # -- RunnerTransport ---------------------------------------------------------------------------
+    # -- RunnerTransport (legacy, identity=None fails loudly) -------------------------------------
 
     async def call(
         self,
@@ -87,15 +151,68 @@ class X402RunnerTransport:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+    ) -> RunnerReply:
+        return await self._run(runner, request, credential, on_signed, identity=None)
+
+    async def open(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+    ) -> "X402RunnerStream":
+        return await self._open_stream(runner, request, credential, on_signed, identity=None)
+
+    # -- IntentAwareTransport (opt-in, ISS-68) -------------------------------------------------------
+
+    async def call_with_intent(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
         identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
-        identity, _ = self._identity(identity)
+        return await self._run(runner, request, credential, on_signed, identity=identity)
+
+    async def open_with_intent(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
+    ) -> "X402RunnerStream":
+        return await self._open_stream(runner, request, credential, on_signed, identity=identity)
+
+    # -- shared --------------------------------------------------------------------
+
+    def _identity(self, identity: X402IntentIdentity | None) -> X402IntentIdentity:
+        """The caller-owned intent key. A missing key is not signed: the intent is the caller's idempotency
+        key (PROTOTYPE.md #3.1), so the transport fails loudly instead of minting one."""
+        if identity is None:
+            raise RunnerCallError(
+                "payment",
+                "the x402 transport requires the caller-owned intent key (job_id, attempt, cycle)",
+                payment_sent=False,
+            )
+        return identity
+
+    async def _run(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None,
+        identity: X402IntentIdentity | None,
+    ) -> RunnerReply:
+        identity = self._identity(identity)
         url = runner.url.rstrip("/") + (request.path or "")
         body, content_type, headers = _request_parts(request)
-        async with httpx.AsyncClient(timeout=request.timeout_s) as _client:
-            response = await _client.request(request.method, url, content=body, headers=headers)
+        async with httpx.AsyncClient(timeout=request.timeout_s) as client:
+            response = await client.request(request.method, url, content=body, headers=headers)
             paid, response = await self._pay(
-                _client,
+                client,
                 request.method,
                 url,
                 body,
@@ -116,26 +233,24 @@ class X402RunnerTransport:
                 payment_sent=paid,
             )
 
-    # -- StreamingRunnerTransport ------------------------------------------------------------------
-
-    async def open(
+    async def _open_stream(
         self,
         runner: Runner,
         request: JobRequest,
         credential: str | None,
-        on_signed: OnSigned | None = None,
-        identity: X402IntentIdentity | None = None,
+        on_signed: OnSigned | None,
+        identity: X402IntentIdentity | None,
     ) -> "X402RunnerStream":
-        identity, _ = self._identity(identity)
+        identity = self._identity(identity)
         url = runner.url.rstrip("/") + (request.path or "")
         body, _content_type, headers = _request_parts(request)
-        _client = httpx.AsyncClient()
+        client = httpx.AsyncClient()
         try:
             async with asyncio.timeout(request.first_byte_timeout_s):
                 req = httpx.Request(request.method, url, content=body, headers=headers)
-                response = await _client.send(req, stream=True)
+                response = await client.send(req, stream=True)
             paid, response = await self._pay(
-                _client,
+                client,
                 request.method,
                 url,
                 body,
@@ -146,7 +261,7 @@ class X402RunnerTransport:
                 credential,
                 stream=True,
             )
-            return X402RunnerStream(_client, response, paid)
+            return X402RunnerStream(client, response, paid)
         except TimeoutError as error:
             # The deadline passed: the payment may have been sent, so it is unknown (D53).
             await client.aclose()
@@ -160,22 +275,9 @@ class X402RunnerTransport:
             await client.aclose()
             raise
 
-    # -- shared --------------------------------------------------------------------
-
-    def _identity(self, identity: X402IntentIdentity | None) -> tuple[X402IntentIdentity, bool]:
-        """The caller-owned intent key. A missing key is not signed: the intent is the caller's idempotency
-        key (PROTOTYPE.md #3.1), so the transport fails loudly instead of minting one."""
-        if identity is None:
-            raise RunnerCallError(
-                "payment",
-                "the x402 transport requires the caller-owned intent key (job_id, attempt, cycle)",
-                payment_sent=False,
-            )
-        return identity, False
-
     async def _pay(
         self,
-        client: httpx.Client,
+        client: httpx.AsyncClient,
         method: str,
         url: str,
         body: bytes,
@@ -186,17 +288,15 @@ class X402RunnerTransport:
         credential: str | None,
         stream: bool = False,
     ) -> tuple[bool, httpx.Response]:
-        """Answer a 402 through the signer, attach the ``Payment`` header and retry. Returns whether a
-        payment was sent on the answered request and the final response."""
+        """Answer a 402 through the payment authorizer, attach the signed ``PAYMENT-SIGNATURE`` header and
+        retry. Returns whether a payment was sent on the answered request and the final response."""
         paid = False
         for _ in range(max(1, self._max_retries)):
             if response.status_code != 402:
                 return (paid, response)
-            chunk = await response.aread()
-            await response.aclose()
-            challenge = parse_x402_challenge(chunk, runner_url)
+            challenge = parse_x402_challenge(response.headers.get("PAYMENT-REQUIRED"), runner_url)
             try:
-                auth = await self._signer.sign(identity, challenge, credential)
+                auth = await self._authorizer.authorize(identity, challenge, credential)
             except X402Refused as error:
                 raise RunnerCallError(
                     "payment_refused",
@@ -221,7 +321,8 @@ class X402RunnerTransport:
                     payment_unknown=True,
                 )
             paid = True
-            headers["Payment"] = auth.payment
+            # The HTTP boundary unwraps the secret (the secret value never rides on the record).
+            headers["PAYMENT-SIGNATURE"] = auth.payment.get_secret_value()
             if stream:
                 req = httpx.Request(method, url, content=body, headers=headers)
                 response = await client.send(req, stream=True)
@@ -236,9 +337,12 @@ class X402RunnerTransport:
 
 
 class X402RunnerStream:
-    """The runner's answer as it arrives (docs/contracts/engine.md#streaming), for the x402 transport."""
+    """The runner's answer as it arrives (docs/contracts/engine.md#streaming), for the x402 transport.
 
-    def __init__(self, client: httpx.Client, response: httpx.Response, payment_sent: bool) -> None:
+    Reads the x402 V2 ``PAYMENT-RESPONSE`` settlement header so a missing or mismatched receipt does not
+    finalize a pending intent (authorization is not settlement)."""
+
+    def __init__(self, client: httpx.AsyncClient, response: httpx.Response, payment_sent: bool) -> None:
         self._client = client
         self._response = response
         self._payment_sent = payment_sent
@@ -253,7 +357,7 @@ class X402RunnerStream:
 
     @property
     def content_type(self) -> str:
-        return self._response.headers.get("Content-Type", "application/octet-stream")
+        return cast(str, self._response.headers.get("Content-Type", "application/octet-stream"))
 
     @property
     def manifest_ids(self) -> tuple[str, ...]:
@@ -262,6 +366,11 @@ class X402RunnerStream:
     @property
     def payment_sent(self) -> bool:
         return self._payment_sent
+
+    def settlement_receipt(self) -> str | None:
+        """The raw ``PAYMENT-RESPONSE`` header (base64 JSON receipt), or None if the runner gave no
+        receipt. A missing receipt means the payment is not settled."""
+        return cast("str | None", self._response.headers.get("PAYMENT-RESPONSE"))
 
     def __aiter__(self) -> AsyncIterator[bytes]:
         return self._response.aiter_bytes()

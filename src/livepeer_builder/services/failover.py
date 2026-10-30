@@ -16,7 +16,7 @@ from livepeer_builder.contracts import (
     reason_fits,
 )
 from livepeer_builder.errors import RunnerCallError
-from livepeer_builder.protocols import Clock, JobRepo, RunnerStream
+from livepeer_builder.protocols import Clock, JobRepo, RunnerStream, X402IntentRepo
 from livepeer_builder.utils import BODY_LIMIT
 
 _LOG = logging.getLogger(__name__)
@@ -64,12 +64,22 @@ def refused_everything(attempt: Attempt) -> bool:
     return bool(attempt.sessions) and all(session.payment_state == "unpaid" for session in attempt.sessions)
 
 
-async def recover_interrupted(store: JobRepo, clock: Clock) -> int:
+async def recover_interrupted(
+    store: JobRepo, clock: Clock, x402_intents: X402IntentRepo | None = None
+) -> int:
     """Resolve jobs a restart left ``running``. One that may hold a payment for work with an unknown
-    outcome becomes ``uncertain``; attempts it failed over from do not count (D52)."""
+    outcome becomes ``uncertain``; attempts it failed over from do not count (D52).
+
+    With an x402 intent journal, a job holding an unresolved (``unknown`` or ``allowed``) intent also stays
+    ``uncertain`` (ISS-68 review, priority B): a crash after the intent was journaled but before the payment
+    evidence was written must not hide a possible charge."""
     recovered = 0
     for job in await store.jobs_in_state("running"):
         maybe_paid = payment_unresolved(job.attempts)
+        if x402_intents is not None:
+            intents = await x402_intents.intents_for_job(job.id)
+            if any(record.state in ("unknown", "allowed") for record in intents):
+                maybe_paid = True
         failure = Failure(
             kind="interrupted",
             message="the engine stopped while this job was running",

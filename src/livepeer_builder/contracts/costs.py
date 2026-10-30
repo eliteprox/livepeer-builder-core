@@ -81,20 +81,29 @@ class JobCost(Contract):
     updated_at: datetime | None
     billable: Fees = Field(default_factory=Fees)
 
-    @computed_field
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def delivered_fees(self) -> Fees:
+        """The fees of the ``delivered`` attempts: what an enterprise bills its user for (same as
+        ``billable``)."""
+        return billable_fees(self.attempts)
+
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def failed_fees(self) -> Fees:
-        """The operator's expense for work that did not deliver (PROTOTYPE.md #4): ``fees`` minus
-        ``billable``. An ``uncertain`` or ``pending`` USD amount stays unknown in the difference, never
-        folded to zero (money is ``Decimal``, missing cost is ``pending``)."""
-        usd = self.fees.fee_usd - self.billable.fee_usd if (
-            self.fees.fee_usd is not None and self.billable.fee_usd is not None
-        ) else None
-        return Fees(
-            fee_eth=self.fees.fee_eth - self.billable.fee_eth,
-            fee_usd=usd,
-            row_count=self.fees.row_count - self.billable.row_count,
-        )
+        """The operator's expense for work that did not deliver (PROTOTYPE.md #4): the fees of the
+        ``failed_after_payment`` attempts only. ``uncertain`` and ``pending`` charges are not confirmed
+        failed spend (ISS-68 review, priority B): they stay in ``pending_fees``, never folded into a
+        confirmed number."""
+        return class_fees(self.attempts, "failed_after_payment")
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def pending_fees(self) -> Fees:
+        """The fees of attempts whose charge has not settled yet (``uncertain``/``pending`` attempts):
+        reported beside the confirmed spend, with a missing USD amount left unknown (never a fabricated
+        zero; money is ``Decimal``, missing cost is ``pending``)."""
+        return class_fees(self.attempts, "uncertain", "pending")
 
 
 def add_fees(parts: Iterable[Fees]) -> Fees:
@@ -110,6 +119,11 @@ def add_fees(parts: Iterable[Fees]) -> Fees:
 def billable_fees(attempts: Iterable[AttemptCost]) -> Fees:
     """What the user is billed for: the ``delivered`` attempts' fees."""
     return add_fees(attempt.fees for attempt in attempts if attempt.cost_class == "delivered")
+
+
+def class_fees(attempts: Iterable[AttemptCost], *classes: str) -> Fees:
+    """The fees of the attempts in the given ``CostClass``es (ISS-68 review, priority B)."""
+    return add_fees(attempt.fees for attempt in attempts if attempt.cost_class in classes)
 
 
 class CostSummary(Contract):

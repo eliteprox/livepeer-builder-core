@@ -30,6 +30,8 @@ from sqlalchemy.types import TypeDecorator
 
 from livepeer_builder.utils import utc
 
+JOBS_ID = "lpb_jobs.id"  # the jobs primary key, referenced by every child table's foreign key
+
 
 class UTCDateTime(TypeDecorator[datetime]):
     impl = DateTime(timezone=True)
@@ -102,7 +104,7 @@ Index("lpb_jobs_state", jobs.c.state)
 attempts = Table(
     "lpb_attempts",
     metadata,
-    Column("job_id", String(36), ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True),
+    Column("job_id", String(36), ForeignKey(JOBS_ID, ondelete="CASCADE"), primary_key=True),
     Column("number", Integer, primary_key=True),
     Column("runner_url", Text, nullable=True),
     Column("orchestrator_url", Text, nullable=True),
@@ -202,7 +204,7 @@ cost_cursor = Table(
 cost_projections = Table(
     "lpb_cost_projections",
     metadata,
-    Column("job_id", String(36), ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True),
+    Column("job_id", String(36), ForeignKey(JOBS_ID, ondelete="CASCADE"), primary_key=True),
     Column("status", String(16), nullable=False),
     Column("fee_eth", String(AMOUNT), nullable=False),
     Column("fee_usd", String(AMOUNT), nullable=True),
@@ -234,14 +236,17 @@ operations = Table(
 )
 
 # -- 0011: x402 payment intents (ISS-68) --------------------------------------------------------------
+# -- 0012: bind the intent to the challenge digest and the encrypted secret reference (ISS-68 review)
 
 # One durable x402 intent per (job, attempt, renewal cycle): the primary key is the unique constraint the
 # caller-owned intent_key is stored under, so two concurrent authorizes for one intent cannot both win.
-# ``state`` moves unknown -> allowed | refused; ``payment`` holds the Payment header value once allowed.
+# ``state`` moves unknown -> allowed | refused. ``challenge_digest`` is the canonical challenge digest
+# journaled before dispatch (a changed challenge must fail loudly), and the Payment header value never
+# rides on the row: ``payment_ref`` points at the encrypted secret (ISS-68 review, priority C).
 payment_intents = Table(
     "lpb_payment_intents",
     metadata,
-    Column("job_id", String(36), ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True),
+    Column("job_id", String(36), ForeignKey(JOBS_ID, ondelete="CASCADE"), primary_key=True),
     Column("attempt_number", Integer, primary_key=True),
     Column("cycle", Integer, primary_key=True),
     Column("intent_key", String(200), nullable=False),
@@ -251,7 +256,9 @@ payment_intents = Table(
     Column("asset", String(128), nullable=False),
     Column("amount", String(AMOUNT), nullable=False),
     Column("nonce", String(128), nullable=False),
-    Column("payment", Text, nullable=True),
+    Column("payment_ref", String(64), nullable=True),
+    Column("payment_url", String(64), nullable=True),
+    Column("challenge_digest", String(64), nullable=False, server_default=text("'#'")),
     Column("created_at", UTCDateTime, nullable=False),
     Column("updated_at", UTCDateTime, nullable=False),
 )

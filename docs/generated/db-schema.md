@@ -102,6 +102,23 @@ erDiagram
         datetime started_at
         datetime completed_at
     }
+    lpb_payment_intents {
+        string job_id PK
+        integer attempt_number PK
+        integer cycle PK
+        string intent_key
+        string state
+        text origin
+        string pay_to
+        string asset
+        string amount
+        string nonce
+        string payment_ref
+        string payment_url
+        string challenge_digest
+        datetime created_at
+        datetime updated_at
+    }
     lpb_payment_sessions {
         string job_id PK
         integer attempt_number PK
@@ -133,6 +150,7 @@ erDiagram
     }
     lpb_attempts ||--o{ lpb_payment_sessions : "attempt_number, job_id"
     lpb_jobs ||--o{ lpb_attempts : "job_id"
+    lpb_jobs ||--o{ lpb_payment_intents : "job_id"
     lpb_jobs ||--o| lpb_cost_projections : "job_id"
     lpb_actors ||--o{ lpb_jobs : "owns (application_id, actor_id)"
     lpb_actors ||--o| lpb_secrets : "secret_ref"
@@ -267,6 +285,31 @@ Indexes:
 | `result` | JSON | yes |  |
 | `started_at` | DATETIME | no |  |
 | `completed_at` | DATETIME | yes |  |
+
+## `lpb_payment_intents`
+
+| Column | Type | Null | Key |
+| --- | --- | --- | --- |
+| `job_id` | VARCHAR(36) | no | PK |
+| `attempt_number` | INTEGER | no | PK |
+| `cycle` | INTEGER | no | PK |
+| `intent_key` | VARCHAR(200) | no |  |
+| `state` | VARCHAR(16) | no |  |
+| `origin` | TEXT | no |  |
+| `pay_to` | VARCHAR(128) | no |  |
+| `asset` | VARCHAR(128) | no |  |
+| `amount` | VARCHAR(64) | no |  |
+| `nonce` | VARCHAR(128) | no |  |
+| `payment_ref` | VARCHAR(64) | yes |  |
+| `payment_url` | VARCHAR(64) | yes |  |
+| `challenge_digest` | VARCHAR(64) | no |  |
+| `created_at` | DATETIME | no |  |
+| `updated_at` | DATETIME | no |  |
+
+Indexes:
+
+- `lpb_payment_intents_key` (intent_key) unique
+- `lpb_payment_intents_state` (state)
 
 ## `lpb_payment_sessions`
 

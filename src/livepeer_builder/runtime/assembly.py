@@ -20,7 +20,7 @@ import enum
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from livepeer_builder.adapters.auth import ApiKeyAuthenticator, AuthenticatorChain
 from livepeer_builder.adapters.clock import SystemClock
@@ -41,6 +41,9 @@ from livepeer_builder.protocols import (
     SelectionPolicy,
     SessionManager,
     UsageSource,
+    X402IntentRepo,
+    X402PaymentAuthorizer,
+    X402Signer,
 )
 from livepeer_builder.services.admission import AdmissionLimiter
 from livepeer_builder.services.costs import CostService, CostSyncWorker
@@ -53,6 +56,7 @@ from livepeer_builder.services.policy import DefaultPolicy
 from livepeer_builder.services.reserved import ReservedEventFeed, ReservedSessions
 from livepeer_builder.services.sightings import SightingRecorder
 from livepeer_builder.services.streams import StreamLimits
+from livepeer_builder.services.x402 import X402PaymentProvider
 
 # The one deliberate conditional import: the default adapters load inside default_parts, so that
 # `import livepeer_builder` stays light (tests/structure/test_import_weight.py). This annotation-only
@@ -105,6 +109,7 @@ class EngineParts:
     secret_store: SecretStore
     events: EventFeed
     sessions: SessionManager
+    x402_provider: X402PaymentProvider | None = None  # the opt-in x402 payment plane (ISS-68)
 
 
 @dataclass(frozen=True)
@@ -125,6 +130,7 @@ class EngineSupply:
     secret_store: SecretStore | _Unset = UNSET
     events: EventFeed | _Unset = UNSET
     sessions: SessionManager | _Unset = UNSET
+    x402_signer: X402Signer | _Unset = UNSET  # the explicitly supplied x402 signer (no HTTP signer adapter)
 
 
 Decorate = Callable[[EngineParts], EngineParts]
@@ -168,6 +174,9 @@ async def default_parts(
         store = sql
     else:
         store = supply.store
+
+    if settings.x402 and not hasattr(store, "x402_intents_for_job"):
+        raise ValueError("LPB_X402=true requires the store to expose x402_intents_for_job for cost evidence")
 
     if isinstance(supply.api_keys, _Unset):
         api_keys = ApiKeys(store) if "api_keys" in settings.auth else None  # LPB_AUTH=jwt replaces keys
@@ -241,6 +250,28 @@ async def default_parts(
     else:
         discovery_source = StaticDiscoverySource()
 
+    x402_provider: X402PaymentProvider | None = None
+    if settings.x402:
+        if isinstance(supply.x402_signer, _Unset):
+            raise ValueError(
+                "LPB_X402=true requires an explicitly supplied x402 signer (EngineSupply.x402_signer)"
+            )
+        x402_provider = X402PaymentProvider(
+            supply.x402_signer, cast(X402IntentRepo, store), clock, secret_store
+        )
+    if isinstance(supply.transport, _Unset):
+        if settings.x402:
+            from livepeer_builder.adapters.x402 import X402RunnerTransport
+
+            assert x402_provider is not None
+            transport: RunnerTransport = X402RunnerTransport(
+                cast(X402PaymentAuthorizer, x402_provider), settings.max_payment_challenge_retries
+            )
+        else:
+            transport = SdkRunnerTransport(settings.signer_url, settings.max_payment_challenge_retries)
+    else:
+        transport = supply.transport
+
     return EngineParts(
         store=store,
         clock=clock,
@@ -248,11 +279,7 @@ async def default_parts(
         authenticators=authenticators,
         api_keys=api_keys,
         discovery_source=discovery_source,
-        transport=(
-            supply.transport
-            if not isinstance(supply.transport, _Unset)
-            else SdkRunnerTransport(settings.signer_url, settings.max_payment_challenge_retries)
-        ),
+        transport=transport,
         selection=supply.selection if not isinstance(supply.selection, _Unset) else MostCapacityFirst(),
         allocation_manager=allocation_manager,
         grants_manager=grants_manager,
@@ -260,6 +287,7 @@ async def default_parts(
         secret_store=secret_store,
         events=supply.events if not isinstance(supply.events, _Unset) else ReservedEventFeed(),
         sessions=supply.sessions if not isinstance(supply.sessions, _Unset) else ReservedSessions(),
+        x402_provider=x402_provider,
     )
 
 
@@ -280,6 +308,7 @@ class EngineServices:
     events: EventFeed
     sessions: SessionManager
     own_authenticators: int  # the deployment's, tried before API keys
+    x402: X402PaymentProvider | None = None  # the x402 payment provider (LPB_X402), off by default
 
 
 def assemble(settings: EngineSettings, parts: EngineParts) -> EngineServices:
@@ -347,6 +376,7 @@ def assemble(settings: EngineSettings, parts: EngineParts) -> EngineServices:
         events=parts.events,
         sessions=parts.sessions,
         own_authenticators=len(parts.authenticators),
+        x402=parts.x402_provider,
     )
 
 

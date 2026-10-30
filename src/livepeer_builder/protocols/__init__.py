@@ -44,12 +44,9 @@ from livepeer_builder.contracts import (
     UsageRow,
     X402IntentIdentity,
 )
-from livepeer_builder.protocols.x402 import (
-    X402IntentRepo as X402IntentRepo,
-)
-from livepeer_builder.protocols.x402 import (
-    X402Signer as X402Signer,
-)
+from livepeer_builder.protocols.x402 import X402IntentRepo as X402IntentRepo  # fmt: skip
+from livepeer_builder.protocols.x402 import X402PaymentAuthorizer as X402PaymentAuthorizer
+from livepeer_builder.protocols.x402 import X402Signer as X402Signer
 
 # -- time -------------------------------------------------------------------------------------------
 
@@ -127,7 +124,6 @@ class RunnerTransport(Protocol):
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
-        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply: ...
 
 
@@ -169,6 +165,33 @@ class StreamingRunnerTransport(RunnerTransport, Protocol):
     """
 
     async def open(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+    ) -> RunnerStream: ...
+
+
+@runtime_checkable
+class IntentAwareTransport(Protocol):
+    """Opt-in, intent-aware transport (ISS-68, PROTOTYPE.md #3.1).
+
+    The legacy ``RunnerTransport.call``/``StreamingRunnerTransport.open`` keep their documented signatures,
+    so existing external adapters keep working. A transport that accepts the caller-owned x402 intent key
+    implements these methods; the engine dispatches to them only when the transport provides them.
+    """
+
+    async def call_with_intent(
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
+    ) -> RunnerReply: ...
+
+    async def open_with_intent(
         self,
         runner: Runner,
         request: JobRequest,

@@ -44,6 +44,7 @@ from livepeer_builder.contracts import (
     SyncCheckpoint,
     SyncReport,
     UsageRow,
+    X402IntentRecord,
     add_fees,
     billable_fees,
 )
@@ -67,7 +68,9 @@ _ENDED: frozenset[str] = frozenset({"succeeded", "failed", "uncertain"})  # stor
 
 
 class CostStore(JobRepo, CostRepo, Protocol):
-    """What the cost service needs from persistence."""
+    """What the cost service needs from persistence. ``x402_intents_for_job`` is an optional capability:
+    the cost service reads it with ``getattr`` and keeps an unresolved intent ``pending`` (ISS-68 review,
+    priority B) only when the store provides it."""
 
 
 class CostSyncWorker:
@@ -279,10 +282,14 @@ async def _compute_all(jobs: Sequence[Job], reads: _UsageReads) -> list[JobCost]
     """Classify jobs from their matched usage rows, read once for all of them. Never stored."""
     keys = sorted({key for job in jobs for key in _matched_sessions(job)})
     rows = await reads.usage_for_payment_sessions(keys) if keys else []
-    return [
-        classify(job, [row for row in rows if row.payment_session_id in _matched_sessions(job)])
-        for job in jobs
-    ]
+    computed = []
+    for job in jobs:
+        getter = getattr(reads, "x402_intents_for_job", None)
+        intents = await getter(job.id) if getter is not None else []
+        computed.append(
+            classify(job, [row for row in rows if row.payment_session_id in _matched_sessions(job)], intents)
+        )
+    return computed
 
 
 def _matched_sessions(job: Job) -> set[str]:
@@ -301,16 +308,20 @@ def _covered(cost: JobCost | None, job: Job) -> bool:
     return job.completed_at is None or cost.updated_at >= job.completed_at
 
 
-def classify(job: Job, rows: Sequence[UsageRow]) -> JobCost:
+def classify(job: Job, rows: Sequence[UsageRow], intents: Sequence[X402IntentRecord] = ()) -> JobCost:
     """Pure classification of one job's charges. Only ``applied`` rows count as cost.
 
     A job that has not ended may still pay, so it is ``pending`` and so is each of its attempts, with the
     fees matched so far: never ``none``, never a final class. A signed session whose usage has not arrived
-    stays ``pending`` too, including the attempt that left the job uncertain.
+    stays ``pending`` too, including the attempt that left the job uncertain. An unresolved x402 intent
+    (``unknown`` or ``allowed``) keeps that attempt — and therefore the job — ``pending``: the charge may
+    already have gone out, so the cost must not be read as final (ISS-68 review, priority B).
     """
     applied = [row for row in rows if row.status == "applied"]
     running = job.state not in _ENDED
     last = max((attempt.number for attempt in job.attempts), default=0)
+    intent_by_attempt = {record.attempt: record for record in intents}
+    unresolved_x402 = any(record.state in ("unknown", "allowed") for record in intents)
     attempts: list[AttemptCost] = []
     for attempt in job.attempts:
         # A manifest the signer refused is no charge (D54); a stored ``unknown`` one may be, so it waits.
@@ -344,6 +355,18 @@ def classify(job: Job, rows: Sequence[UsageRow]) -> JobCost:
                 AttemptCost(attempt_number=attempt.number, cost_class="pending", fees=fees_of(mine))
             )
             continue
+        intent = intent_by_attempt.get(attempt.number)
+        if intent is not None and intent.state in ("unknown", "allowed"):
+            # An unresolved x402 intent keeps its attempt unsettled: ``unknown`` may have charged
+            # (``uncertain``), ``allowed`` settles later (``pending``) (ISS-68 review, priority B).
+            attempts.append(
+                AttemptCost(
+                    attempt_number=attempt.number,
+                    cost_class="uncertain" if intent.state == "unknown" else "pending",
+                    fees=fees_of(mine),
+                )
+            )
+            continue
         # Pending wins while a sibling is still waiting. Once usage has been seen, an ambiguous
         # signed session makes the attempt uncertain. Its rows stay unattributed; a sibling's
         # matched fee stays on the attempt.
@@ -363,6 +386,8 @@ def classify(job: Job, rows: Sequence[UsageRow]) -> JobCost:
     status: CostStatus
     if running:
         status = "pending"
+    elif unresolved_x402:
+        status = "pending"  # an unresolved x402 intent may still settle (ISS-68 review, priority B)
     elif not attempts:
         status = "none"
     elif any(attempt.cost_class == "pending" for attempt in attempts):

@@ -1,21 +1,17 @@
 """Jobs: immediate execution with failover, durable attempts, streaming, and recovery.
 
 Rules this module enforces (docs/contracts/engine.md#behavior-the-contract-fixes):
-1. Fail over when another runner can do what this one did not, and only to another orchestrator after
-   a payment (services/failover.py, D52). A paid failure that may have run the work, or whose payment is
-   unknown, is ``uncertain``; one that ran, or is about the request, is ``failed``.
-2. One (application, actor, operation_ref) dispatches at most once; a changed body is a conflict. A
-   repeat while the job runs is ``OperationInProgress``; a repeat after a failure that never reached a
-   runner dispatches a new job under the same reference (D57, services/operations.py).
-3. An attempt row is written *before* the call and updated after it. Paid-but-unknown is
-   ``uncertain``, never ``failed``. Jobs left ``running`` by a restart are resolved on start.
+1. Fail over only to a runner that can do the work, and only after a payment (services/failover.py, D52);
+   a paid-unknown failure is ``uncertain``, a ran/failed one is ``failed``.
+2. One (application, actor, operation_ref) dispatches at most once; a changed body conflicts, a repeat while
+   running is ``OperationInProgress``, and a repeat after a non-dispatched failure re-dispatches (D57).
+3. An attempt row is written *before* the call and updated after it; paid-but-unknown is ``uncertain``, never
+   ``failed``; jobs left ``running`` by a restart are resolved on start.
 4. Admission and provisioning are checked before any payment.
-5. A streamed job (docs/contracts/engine.md#streaming) is bound to its runner once the stream is
-   open; it ends ``succeeded``, or ``uncertain`` when the runner failed, timed out, or the caller
-   stopped reading (``abandoned``). The admission slot is held until the stream ends.
-6. Opening a stream is bounded by ``first_byte_timeout_s`` and the job's ``timeout_s`` (D35). The
-   transport enforces it and keeps the payment evidence; the engine's backstop catches a transport
-   that does not, and treats the payment as unknown.
+5. A streamed job binds to its runner once the stream opens; it ends ``succeeded``, or ``uncertain`` on
+   failure/timeout/abandonment (docs/contracts/engine.md#streaming); the slot holds until the stream ends.
+6. Opening a stream is bounded by ``first_byte_timeout_s`` and ``timeout_s`` (D35); a transport ignoring the
+   deadline leaves the payment ``unknown`` (the engine's backstop keeps the evidence).
 """
 
 import asyncio
@@ -58,11 +54,13 @@ from livepeer_builder.protocols import (
     AccessPolicy,
     Clock,
     CredentialResolver,
+    IntentAwareTransport,
     JobRepo,
     RunnerStream,
     RunnerTransport,
     SelectionPolicy,
     StreamingRunnerTransport,
+    X402IntentRepo,
 )
 from livepeer_builder.services.admission import AdmissionLimiter
 from livepeer_builder.services.discovery import DiscoveryService, capped_first
@@ -216,8 +214,7 @@ class JobService:
         return await self._store.list_jobs(actor.application_id, target, limit=limit, before=before)
 
     async def report_usage(self, actor: ActorContext, job_id: UUID, quantities: Mapping[str, int]) -> Job:
-        """The application measured the work and reports it once (service-mode default). Running the job
-        is the permission it needs, not reading it (D44)."""
+        """The application measured the work and reports it once; running the job is the permission (D44)."""
         job = await self._owned(actor, Operation.JOBS_RUN, job_id)
         if job.usage is not None:
             raise InvalidRequest("usage was already reported for this job")
@@ -232,8 +229,10 @@ class JobService:
         return job.model_copy(update={"usage": usage})
 
     async def recover_interrupted(self) -> int:
-        """Resolve jobs a restart left ``running`` (``failover.recover_interrupted``)."""
-        return await recover_interrupted(self._store, self._clock)
+        """Resolve jobs a restart left ``running``; an x402 intent journaled before the evidence write
+        leaves the job ``uncertain`` (ISS-68 review, priority B)."""
+        x402_intents = cast(X402IntentRepo, self._store)
+        return await recover_interrupted(self._store, self._clock, x402_intents)
 
     # -- shared steps -------------------------------------------------------------------------------
 
@@ -349,9 +348,12 @@ class JobService:
             recorder = SignedSessionRecorder(self._store, attempts)
             identity = X402IntentIdentity(job_id=job.id, attempt=number, cycle=0)
             try:
-                reply = await self._transport.call(
-                    runner, request, credential.token, on_signed=recorder, identity=identity
-                )
+                if isinstance(self._transport, IntentAwareTransport):
+                    reply = await self._transport.call_with_intent(
+                        runner, request, credential.token, on_signed=recorder, identity=identity
+                    )
+                else:  # legacy adapters keep the documented ``call`` signature (ISS-68 review, priority A)
+                    reply = await self._transport.call(runner, request, credential.token, on_signed=recorder)
             except RunnerCallError as error:
                 failed = await self._attempt_failed(job, attempts, error, runner, candidates)
                 if failed is not None:
@@ -399,9 +401,12 @@ class JobService:
             identity = X402IntentIdentity(job_id=job.id, attempt=number, cycle=0)
             try:
                 async with asyncio.timeout(max(budget, 0) + self._stream_limits.open_grace_s):
-                    opened = await transport.open(
-                        runner, bounded, credential.token, on_signed=recorder, identity=identity
-                    )
+                    if isinstance(transport, IntentAwareTransport):
+                        opened = await transport.open_with_intent(
+                            runner, bounded, credential.token, on_signed=recorder, identity=identity
+                        )
+                    else:  # legacy adapters keep the documented ``open`` signature (ISS-68 review)
+                        opened = await transport.open(runner, bounded, credential.token, on_signed=recorder)
             except RunnerCallError as error:
                 failed = await self._attempt_failed(job, attempts, error, runner, candidates)
                 if failed is not None:

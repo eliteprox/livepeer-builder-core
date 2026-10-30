@@ -11,10 +11,12 @@ from decimal import Decimal
 
 import pytest
 
-from livepeer_builder.contracts import Job
+from livepeer_builder.contracts import Job, SecretRef
 from livepeer_builder.store import SqlStore
 from livepeer_builder.testing import FixedClock
 from tests.store.conftest import make_job
+
+REF = SecretRef(ref="pay-1")
 
 
 @pytest.fixture
@@ -48,12 +50,19 @@ async def test_state_writes_are_compare_and_set(sql: SqlStore, clock: FixedClock
     await sql.insert_payment_intent(
         job.id, 1, 0, "https://runner.example", "0xpay", "0xasset", Decimal("100000"), "n1", clock.now()
     )
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", "pay-1", clock.now()) is True
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", "pay-1", clock.now()) is False  # already allowed
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "refused", None, clock.now()) is False  # wrong from_state
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "refused", None, clock.now(), from_state="allowed") is True
+    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", REF, clock.now()) is True
+    assert (
+        await sql.set_payment_intent_state(job.id, 1, 0, "allowed", REF, clock.now()) is False
+    )  # already allowed
+    assert (
+        await sql.set_payment_intent_state(job.id, 1, 0, "refused", None, clock.now()) is False
+    )  # wrong from_state
+    assert (
+        await sql.set_payment_intent_state(job.id, 1, 0, "refused", None, clock.now(), from_state="allowed")
+        is True
+    )
     record = await sql.get_payment_intent(job.id, 1, 0)
-    assert record is not None and (record.state, record.payment) == ("refused", None)
+    assert record is not None and record.state == "refused" and record.payment_ref is None
 
 
 async def test_unknown_intents_are_recovered_after_a_crash(sql: SqlStore, clock: FixedClock) -> None:
@@ -63,7 +72,7 @@ async def test_unknown_intents_are_recovered_after_a_crash(sql: SqlStore, clock:
     )
     [unknown] = await sql.unknown_payment_intents()
     assert (unknown.job_id, unknown.state) == (job.id, "unknown")
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", "pay-1", clock.now())
+    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", REF, clock.now())
     assert await sql.unknown_payment_intents() == []  # settled: no pending cost remains
 
 
@@ -72,9 +81,13 @@ async def test_renewals_list_the_allowed_intents_with_a_payment(sql: SqlStore, c
     await sql.insert_payment_intent(
         job.id, 1, 0, "https://runner.example", "0xpay", "0xasset", Decimal("100000"), "n1", clock.now()
     )
-    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", "pay-1", clock.now())
+    assert await sql.set_payment_intent_state(job.id, 1, 0, "allowed", REF, clock.now())
     [renewal] = await sql.list_renewals()
-    assert (renewal.job_id, renewal.cycle, renewal.payment) == (job.id, 0, "pay-1")
+    assert (renewal.job_id, renewal.cycle, renewal.payment_ref) == (
+        job.id,
+        0,
+        REF,
+    )  # the value lives in the secret store
 
     other = await make_job_row(sql, clock, actor="bob")
     await sql.insert_payment_intent(
@@ -89,10 +102,10 @@ async def test_a_renewal_creates_the_next_cycle_row(sql: SqlStore, clock: FixedC
     await sql.insert_payment_intent(
         job.id, 1, 0, "https://runner.example", "0xpay", "0xasset", Decimal("100000"), "n1", clock.now()
     )
-    await sql.set_payment_intent_state(job.id, 1, 0, "allowed", "pay-1", clock.now())
+    await sql.set_payment_intent_state(job.id, 1, 0, "allowed", REF, clock.now())
     second, created = await sql.insert_payment_intent(
         job.id, 1, 1, "https://runner.example", "0xpay", "0xasset", Decimal("100000"), "n1", clock.now()
     )
     assert created and second.intent_key == f"x402:{job.id}:1:1"
-    assert await sql.set_payment_intent_state(job.id, 1, 1, "allowed", "pay-1", clock.now(), from_state="unknown")
+    assert await sql.set_payment_intent_state(job.id, 1, 1, "allowed", REF, clock.now(), from_state="unknown")
     assert len(await sql.list_renewals()) == 2  # both cycles are renewal candidates

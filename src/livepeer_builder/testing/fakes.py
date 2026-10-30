@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import SecretStr
 
@@ -23,7 +24,7 @@ from livepeer_builder.contracts import (
     SecretRef,
     UsagePage,
     UsageRow,
-    X402IntentIdentity,
+    X402IntentRecord,
 )
 from livepeer_builder.errors import CursorMismatch, NotFound, RunnerCallError
 from livepeer_builder.protocols import OnSigned
@@ -89,7 +90,6 @@ class ScriptedTransport:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
-        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
         self.calls.append((runner.url, credential))
         if not self.steps:
@@ -198,7 +198,6 @@ class ScriptedStreamTransport(ScriptedTransport):
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
-        identity: X402IntentIdentity | None = None,
     ) -> ScriptedStream:
         self.calls.append((runner.url, credential))
         if not self.opens:
@@ -235,6 +234,86 @@ class MemorySecretStore:
 
     async def delete(self, ref: SecretRef) -> None:
         self.values.pop(ref.ref, None)
+
+
+class FakePaymentIntents:
+    """In-memory ``X402IntentRepo`` (PROTOTYPE.md #3.1): durable x402 intent state a restart recovers."""
+
+    def __init__(self) -> None:
+        self.intents: dict[tuple[UUID, int, int], X402IntentRecord] = {}
+
+    @staticmethod
+    def _key(job_id: UUID, attempt: int, cycle: int) -> tuple[UUID, int, int]:
+        return (job_id, attempt, cycle)
+
+    async def insert_payment_intent(
+        self,
+        job_id: UUID,
+        attempt: int,
+        cycle: int,
+        origin: str,
+        pay_to: str,
+        asset: str,
+        amount: Decimal,
+        nonce: str,
+        now: datetime,
+        challenge_digest: str = "",
+        payment_url: str | None = None,
+    ) -> tuple[X402IntentRecord, bool]:
+        key = self._key(job_id, attempt, cycle)
+        if key in self.intents:
+            return self.intents[key], False
+        record = X402IntentRecord(
+            job_id=job_id,
+            attempt=attempt,
+            cycle=cycle,
+            intent_key=f"x402:{job_id}:{attempt}:{cycle}",
+            state="unknown",
+            origin=origin,
+            pay_to=pay_to,
+            asset=asset,
+            amount=amount,
+            nonce=nonce,
+            payment_ref=None,
+            payment_url=payment_url,
+            challenge_digest=challenge_digest,
+            created_at=now,
+            updated_at=now,
+        )
+        self.intents[key] = record
+        return record, True
+
+    async def get_payment_intent(self, job_id: UUID, attempt: int, cycle: int) -> X402IntentRecord | None:
+        return self.intents.get(self._key(job_id, attempt, cycle))
+
+    async def intents_for_job(self, job_id: UUID) -> list[X402IntentRecord]:
+        return [record for key, record in self.intents.items() if key[0] == job_id]
+
+    async def set_payment_intent_state(
+        self,
+        job_id: UUID,
+        attempt: int,
+        cycle: int,
+        state: str,
+        payment_ref: SecretRef | None,
+        now: datetime,
+        from_state: str = "unknown",
+    ) -> bool:
+        key = self._key(job_id, attempt, cycle)
+        record = self.intents.get(key)
+        if record is None or record.state != from_state:
+            return False
+        self.intents[key] = record.model_copy(
+            update={"state": state, "payment_ref": payment_ref, "updated_at": now}
+        )
+        return True
+
+    async def unknown_payment_intents(self, limit: int = 100) -> list[X402IntentRecord]:
+        return [record for record in self.intents.values() if record.state == "unknown"][:limit]
+
+    async def list_renewals(self, limit: int = 100) -> list[X402IntentRecord]:
+        records = [r for r in self.intents.values() if r.state == "allowed" and r.payment_ref is not None]
+        return records[:limit]
 
 
 @dataclass

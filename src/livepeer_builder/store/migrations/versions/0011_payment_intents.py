@@ -27,7 +27,9 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.create_table(
         "lpb_payment_intents",
-        sa.Column("job_id", sa.String(36), sa.ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True),
+        sa.Column(
+            "job_id", sa.String(36), sa.ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True
+        ),
         sa.Column("attempt_number", sa.Integer, primary_key=True),
         sa.Column("cycle", sa.Integer, primary_key=True),
         sa.Column("intent_key", sa.String(200), nullable=False),

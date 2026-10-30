@@ -18,9 +18,11 @@ from livepeer_builder.contracts import (
     JobRequest,
     Money,
     ProvisionRequest,
+    SecretRef,
     SignedSession,
     SyncCheckpoint,
     UsageRow,
+    X402IntentRecord,
 )
 from livepeer_builder.errors import JobFailed, RunnerCallError
 from livepeer_builder.runtime import BuilderEngine
@@ -706,3 +708,45 @@ async def test_a_row_committed_while_a_sync_classifies_the_job_is_never_lost(
     await engine.costs.sync_once()  # the next sync stores the job again
     stored = await store.get_projection(job.id)
     assert stored is not None and stored.fees.fee_eth == Decimal("0.75")
+
+
+def test_an_unresolved_x402_intent_keeps_the_cost_pending() -> None:
+    job = job_with(("timeout", (), True), state="uncertain")
+    now = FixedClock().now()
+    intent = X402IntentRecord(
+        job_id=job.id,
+        attempt=1,
+        cycle=0,
+        intent_key=f"x402:{job.id}:1:0",
+        state="unknown",
+        origin="https://runner.example",
+        pay_to="0xpay",
+        asset="0xasset",
+        amount=Decimal("100000"),
+        nonce="n1",
+        created_at=now,
+        updated_at=now,
+    )
+    cost = classify(job, [], [intent])
+    assert cost.status == "pending"  # the payment may already have gone out, so the cost never reads final
+    assert cost.attempts[0].cost_class == "uncertain"
+    assert cost.pending_fees.fee_eth == Decimal(0)
+
+    allowed = intent.model_copy(
+        update={
+            "state": "allowed",
+            "payment_ref": SecretRef(ref="pay-1"),
+            "payment_url": "https://pay.example",
+            "challenge_digest": "d1",
+        }
+    )
+    settled = classify(job, [], [allowed])
+    assert settled.status == "pending"  # an allowed intent settles later, fee splits stay pending
+    assert settled.attempts[0].cost_class == "pending"
+    assert settled.pending_fees.fee_eth == Decimal(0)
+
+    refused = intent.model_copy(update={"state": "refused"})
+    final = classify(job, [], [refused])  # a refused intent is no charge (D54)
+    assert final.status == "observed"
+    assert final.attempts[0].cost_class == "uncertain"
+    assert final.fees.fee_eth == Decimal(0)  # no applied rows and no charge

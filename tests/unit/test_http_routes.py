@@ -361,10 +361,13 @@ async def test_a_raw_body_arrives_as_base64_over_rest(  # type: ignore[no-untype
     call = transport.call
 
     async def capture(
-        runner, request, credential, on_signed=None, identity=None  # type: ignore[no-untyped-def]
+        runner,
+        request,
+        credential,
+        on_signed=None,  # type: ignore[no-untyped-def]
     ):
         seen.append(request)
-        return await call(runner, request, credential, on_signed, identity=identity)
+        return await call(runner, request, credential, on_signed)
 
     monkeypatch.setattr(transport, "call", capture)
     transport.steps = [ScriptedTransport.ok()]

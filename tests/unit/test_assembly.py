@@ -66,7 +66,13 @@ class Recording:
 def test_engine_supply_names_exactly_the_engine_parts() -> None:
     parts = [field.name for field in dataclasses.fields(EngineParts)]
     supply = [field.name for field in dataclasses.fields(EngineSupply)]
-    assert supply == parts, "EngineSupply and EngineParts must have the same fields (decision 6)"
+    # Decision 6: every supply field maps to a same-named parts field, with exactly one deliberate
+    # exception (ISS-68): the caller supplies the x402 signer (``x402_signer``) and the engine builds
+    # the provider (``x402_provider``) from it (PROTOTYPE.md #2). Every other field keeps the exact-name
+    # rule, and every supply field still defaults to UNSET.
+    assert set(supply) - {"x402_signer"} == set(parts) - {"x402_provider"}, (
+        "EngineSupply and EngineParts must have the same fields (decision 6), except the x402 signer/provider pair"
+    )
     assert all(getattr(EngineSupply(), name) is UNSET for name in supply)
 
 
