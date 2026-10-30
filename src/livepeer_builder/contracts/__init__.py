@@ -79,6 +79,13 @@ from livepeer_builder.contracts.payments import (
     SeenActor,
 )
 from livepeer_builder.contracts.reserved import EngineEvent, EventPage, Session, SessionRequest
+from livepeer_builder.contracts.x402 import (
+    X402Authorization,
+    X402Challenge,
+    X402IntentIdentity,
+    X402IntentRecord,
+    X402IntentState,
+)
 
 __all__ = [
     "DEFAULT_ACTOR_PERMISSIONS",
@@ -151,6 +158,11 @@ __all__ = [
     "SyncReport",
     "UsagePage",
     "UsageRow",
+    "X402Authorization",
+    "X402Challenge",
+    "X402IntentIdentity",
+    "X402IntentRecord",
+    "X402IntentState",
     "add_fees",
     "billable_fees",
     "reason_fits",

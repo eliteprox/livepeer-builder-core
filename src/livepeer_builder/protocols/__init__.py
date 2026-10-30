@@ -42,6 +42,13 @@ from livepeer_builder.contracts import (
     SyncCheckpoint,
     UsagePage,
     UsageRow,
+    X402IntentIdentity,
+)
+from livepeer_builder.protocols.x402 import (
+    X402IntentRepo as X402IntentRepo,
+)
+from livepeer_builder.protocols.x402 import (
+    X402Signer as X402Signer,
 )
 
 # -- time -------------------------------------------------------------------------------------------
@@ -115,7 +122,12 @@ class RunnerTransport(Protocol):
     """
 
     async def call(
-        self, runner: Runner, request: JobRequest, credential: str | None, on_signed: OnSigned | None = None
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply: ...
 
 
@@ -157,7 +169,12 @@ class StreamingRunnerTransport(RunnerTransport, Protocol):
     """
 
     async def open(
-        self, runner: Runner, request: JobRequest, credential: str | None, on_signed: OnSigned | None = None
+        self,
+        runner: Runner,
+        request: JobRequest,
+        credential: str | None,
+        on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerStream: ...
 
 
@@ -217,6 +234,10 @@ class AllowanceReader(Protocol):
     async def allocation_for(self, application_id: str, actor_id: str | None) -> str | None: ...
 
     async def read_allowance(self, allocation_id: str) -> Allowance: ...
+
+
+# -- x402 boundary (ISS-68, PROTOTYPE.md) ----------------------------------------------------------
+# X402Signer and X402IntentRepo live in livepeer_builder.protocols.x402 (imported above).
 
 
 # -- persistence (docs/contracts/persistence.md) ----------------------------------------------------

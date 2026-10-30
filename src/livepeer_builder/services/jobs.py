@@ -44,6 +44,7 @@ from livepeer_builder.contracts import (
     ResultRef,
     Runner,
     RunnerReply,
+    X402IntentIdentity,
 )
 from livepeer_builder.errors import (
     InvalidRequest,
@@ -346,8 +347,11 @@ class JobService:
         for number, runner in enumerate(candidates, start=1):
             await self._start_attempt(job, number, runner, credential, attempts)
             recorder = SignedSessionRecorder(self._store, attempts)
+            identity = X402IntentIdentity(job_id=job.id, attempt=number, cycle=0)
             try:
-                reply = await self._transport.call(runner, request, credential.token, on_signed=recorder)
+                reply = await self._transport.call(
+                    runner, request, credential.token, on_signed=recorder, identity=identity
+                )
             except RunnerCallError as error:
                 failed = await self._attempt_failed(job, attempts, error, runner, candidates)
                 if failed is not None:
@@ -392,9 +396,12 @@ class JobService:
             started = loop.time()
             budget = min(request.first_byte_timeout_s, deadline - started)
             bounded = request.model_copy(update={"first_byte_timeout_s": max(budget, 0.001)})
+            identity = X402IntentIdentity(job_id=job.id, attempt=number, cycle=0)
             try:
                 async with asyncio.timeout(max(budget, 0) + self._stream_limits.open_grace_s):
-                    opened = await transport.open(runner, bounded, credential.token, on_signed=recorder)
+                    opened = await transport.open(
+                        runner, bounded, credential.token, on_signed=recorder, identity=identity
+                    )
             except RunnerCallError as error:
                 failed = await self._attempt_failed(job, attempts, error, runner, candidates)
                 if failed is not None:

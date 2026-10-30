@@ -18,6 +18,7 @@ from livepeer_builder.contracts import (
     ProvisionRequest,
     Runner,
     RunnerReply,
+    X402IntentIdentity,
 )
 from livepeer_builder.errors import JobFailed, RunnerCallError
 from livepeer_builder.protocols import OnSigned
@@ -42,6 +43,7 @@ class SignsThenWaits:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
         assert on_signed is not None, "the engine passes a recorder for every paid call"
         await on_signed("m-1")
@@ -139,8 +141,9 @@ class OpensAfterSigning(SignsThenWaits):
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
-        return await self.call(runner, request, credential, on_signed)
+        return await self.call(runner, request, credential, on_signed, identity)
 
 
 async def test_a_stream_cancelled_before_its_first_byte_keeps_its_evidence(

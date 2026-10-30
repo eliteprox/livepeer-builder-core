@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, computed_field
 
 from livepeer_builder.contracts.common import Contract, Money
 
@@ -80,6 +80,21 @@ class JobCost(Contract):
     first_observed_at: datetime | None
     updated_at: datetime | None
     billable: Fees = Field(default_factory=Fees)
+
+    @computed_field
+    @property
+    def failed_fees(self) -> Fees:
+        """The operator's expense for work that did not deliver (PROTOTYPE.md #4): ``fees`` minus
+        ``billable``. An ``uncertain`` or ``pending`` USD amount stays unknown in the difference, never
+        folded to zero (money is ``Decimal``, missing cost is ``pending``)."""
+        usd = self.fees.fee_usd - self.billable.fee_usd if (
+            self.fees.fee_usd is not None and self.billable.fee_usd is not None
+        ) else None
+        return Fees(
+            fee_eth=self.fees.fee_eth - self.billable.fee_eth,
+            fee_usd=usd,
+            row_count=self.fees.row_count - self.billable.row_count,
+        )
 
 
 def add_fees(parts: Iterable[Fees]) -> Fees:

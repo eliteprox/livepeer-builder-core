@@ -233,4 +233,29 @@ operations = Table(
     Column("completed_at", UTCDateTime, nullable=True),
 )
 
+# -- 0011: x402 payment intents (ISS-68) --------------------------------------------------------------
+
+# One durable x402 intent per (job, attempt, renewal cycle): the primary key is the unique constraint the
+# caller-owned intent_key is stored under, so two concurrent authorizes for one intent cannot both win.
+# ``state`` moves unknown -> allowed | refused; ``payment`` holds the Payment header value once allowed.
+payment_intents = Table(
+    "lpb_payment_intents",
+    metadata,
+    Column("job_id", String(36), ForeignKey("lpb_jobs.id", ondelete="CASCADE"), primary_key=True),
+    Column("attempt_number", Integer, primary_key=True),
+    Column("cycle", Integer, primary_key=True),
+    Column("intent_key", String(200), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("origin", Text, nullable=False),
+    Column("pay_to", String(128), nullable=False),
+    Column("asset", String(128), nullable=False),
+    Column("amount", String(AMOUNT), nullable=False),
+    Column("nonce", String(128), nullable=False),
+    Column("payment", Text, nullable=True),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("updated_at", UTCDateTime, nullable=False),
+)
+Index("lpb_payment_intents_key", payment_intents.c.intent_key, unique=True)
+Index("lpb_payment_intents_state", payment_intents.c.state)
+
 VERSION_TABLE = "lpb_alembic_version"

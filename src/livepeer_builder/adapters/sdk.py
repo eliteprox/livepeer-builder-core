@@ -29,6 +29,7 @@ from livepeer_builder.contracts import (
     Runner,
     RunnerGPU,
     RunnerReply,
+    X402IntentIdentity,
 )
 from livepeer_builder.contracts.discovery import DISCOVERY_MAX_BYTES, PRICE_LIMIT, PRICE_RULE, is_price
 from livepeer_builder.protocols import OnSigned
@@ -137,6 +138,7 @@ class SdkRunnerTransport:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
         events = PaymentEvents(on_signed)
         paid = self._request(runner, request, credential, events)
@@ -157,6 +159,7 @@ class SdkRunnerTransport:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> SdkRunnerStream:
         """The paid request, answered: the 402 is paid before the first byte, so payment is known here.
 

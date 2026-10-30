@@ -23,6 +23,7 @@ from livepeer_builder.contracts import (
     SecretRef,
     UsagePage,
     UsageRow,
+    X402IntentIdentity,
 )
 from livepeer_builder.errors import CursorMismatch, NotFound, RunnerCallError
 from livepeer_builder.protocols import OnSigned
@@ -88,6 +89,7 @@ class ScriptedTransport:
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> RunnerReply:
         self.calls.append((runner.url, credential))
         if not self.steps:
@@ -196,6 +198,7 @@ class ScriptedStreamTransport(ScriptedTransport):
         request: JobRequest,
         credential: str | None,
         on_signed: OnSigned | None = None,
+        identity: X402IntentIdentity | None = None,
     ) -> ScriptedStream:
         self.calls.append((runner.url, credential))
         if not self.opens:
