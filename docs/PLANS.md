@@ -53,3 +53,5 @@ Nothing closes without Mike's review. Josh reviews engine code.
 
 - [Native HTTP transport](exec-plans/active/native-http-transport.md): bounded raw bodies,
   operation identity and stream headers; remaining SDK dependencies are explicit.
+
+- [Local GitLab x402 prototype](exec-plans/active/gitlab-x402-68.md): independent issue 68 experiment.
