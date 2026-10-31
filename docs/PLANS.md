@@ -48,3 +48,5 @@ Nothing closes without Mike's review. Josh reviews engine code.
 
 - [Native HTTP transport](exec-plans/active/native-http-transport.md): bounded raw bodies,
   operation identity and stream headers; remaining SDK dependencies are explicit.
+
+- [Swarm content services](exec-plans/active/swarm-content-services.md): proposed direct publishing, durable artifacts, enterprise usage metering and optional network AAC retrieval.

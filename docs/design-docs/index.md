@@ -2,6 +2,7 @@
 
 | Document | Status | Verified against code |
 | --- | --- | --- |
+| [swarm-content-services.md](swarm-content-services.md) | Proposed: direct gateway publication, artifact delivery and optional network retrieval | Verified against `releases/m3` `e69c85a`; no runtime changes |
 | [core-beliefs.md](core-beliefs.md) | Accepted | Partly enforced by `tests/structure/` |
 | [m3-decisions.md](m3-decisions.md) | Decisions after the M2 close-out: streaming, abandoned streams, runner metadata, the stream lifecycle fixes (D34–D39) | yes |
 | [m3-guides/](m3-guides/index.md) | One implementation guide per remaining M3 engine change (architecture, code areas, test plan, open questions) | Proposals, verified against `releases/m3` `d3df806` |
