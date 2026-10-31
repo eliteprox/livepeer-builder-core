@@ -13,8 +13,9 @@ supplied explicitly (no HTTP signer, no LPB_SIGNER_URL auto-wiring) — tests su
 
 import asyncio
 import base64
+import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -31,6 +32,7 @@ from livepeer_builder.contracts import (
 )
 from livepeer_builder.errors import RunnerCallError, X402Refused, X402SignerUnknown
 from livepeer_builder.protocols import OnSigned, X402PaymentAuthorizer
+from livepeer_builder.protocols.x402 import X402StreamLifecycle
 
 
 def parse_x402_challenge(pay_required: str | None, runner_url: str) -> X402Challenge:
@@ -245,6 +247,7 @@ class X402RunnerTransport:
         url = runner.url.rstrip("/") + (request.path or "")
         body, _content_type, headers = _request_parts(request)
         client = httpx.AsyncClient()
+        renewal_mode = "metered" if runner.mode == "persistent" else "single-shot"
         try:
             async with asyncio.timeout(request.first_byte_timeout_s):
                 req = httpx.Request(request.method, url, content=body, headers=headers)
@@ -260,11 +263,18 @@ class X402RunnerTransport:
                 identity,
                 credential,
                 stream=True,
+                renewal_mode=renewal_mode,
             )
-            return X402RunnerStream(client, response, paid)
+            return X402RunnerStream(
+                client,
+                response,
+                paid,
+                on_close=_stream_closer(self._authorizer, identity),
+            )
         except TimeoutError as error:
             # The deadline passed: the payment may have been sent, so it is unknown (D53).
             await client.aclose()
+            await _close_stream(self._authorizer, identity)
             raise RunnerCallError(
                 "timeout",
                 f"no answer from {url} within {request.first_byte_timeout_s:g}s",
@@ -273,6 +283,7 @@ class X402RunnerTransport:
             ) from error
         except BaseException:
             await client.aclose()
+            await _close_stream(self._authorizer, identity)
             raise
 
     async def _pay(
@@ -287,6 +298,7 @@ class X402RunnerTransport:
         identity: X402IntentIdentity,
         credential: str | None,
         stream: bool = False,
+        renewal_mode: str = "single-shot",
     ) -> tuple[bool, httpx.Response]:
         """Answer a 402 through the payment authorizer, attach the signed ``PAYMENT-SIGNATURE`` header and
         retry. Returns whether a payment was sent on the answered request and the final response."""
@@ -321,6 +333,13 @@ class X402RunnerTransport:
                     payment_unknown=True,
                 )
             paid = True
+            if stream and isinstance(self._authorizer, X402StreamLifecycle):
+                await self._authorizer.open_stream(
+                    identity,
+                    challenge,
+                    credential,
+                    mode="metered" if renewal_mode == "metered" else "single-shot",
+                )
             # The HTTP boundary unwraps the secret (the secret value never rides on the record).
             headers["PAYMENT-SIGNATURE"] = auth.payment.get_secret_value()
             if stream:
@@ -342,10 +361,17 @@ class X402RunnerStream:
     Reads the x402 V2 ``PAYMENT-RESPONSE`` settlement header so a missing or mismatched receipt does not
     finalize a pending intent (authorization is not settlement)."""
 
-    def __init__(self, client: httpx.AsyncClient, response: httpx.Response, payment_sent: bool) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        response: httpx.Response,
+        payment_sent: bool,
+        on_close: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._client = client
         self._response = response
         self._payment_sent = payment_sent
+        self._on_close = on_close
 
     @property
     def status_code(self) -> int:
@@ -376,8 +402,30 @@ class X402RunnerStream:
         return self._response.aiter_bytes()
 
     async def aclose(self) -> None:
-        await self._response.aclose()
-        await self._client.aclose()
+        try:
+            if self._on_close is not None:
+                await self._on_close()
+        finally:
+            await self._response.aclose()
+            await self._client.aclose()
+
+
+def _stream_closer(
+    authorizer: X402PaymentAuthorizer, identity: X402IntentIdentity
+) -> Callable[[], Awaitable[None]] | None:
+    if not isinstance(authorizer, X402StreamLifecycle):
+        return None
+
+    async def close() -> None:
+        await authorizer.close_stream(identity.job_id, identity.attempt)
+
+    return close
+
+
+async def _close_stream(authorizer: X402PaymentAuthorizer, identity: X402IntentIdentity) -> None:
+    if isinstance(authorizer, X402StreamLifecycle):
+        with contextlib.suppress(Exception):
+            await authorizer.close_stream(identity.job_id, identity.attempt)
 
 
 def _request_parts(request: JobRequest) -> tuple[bytes, str, dict[str, str]]:

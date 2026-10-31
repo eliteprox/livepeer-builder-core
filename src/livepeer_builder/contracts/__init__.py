@@ -85,6 +85,10 @@ from livepeer_builder.contracts.x402 import (
     X402IntentIdentity,
     X402IntentRecord,
     X402IntentState,
+    X402RenewalOutcome,
+    X402StreamMode,
+    X402StreamPhase,
+    X402StreamStatus,
 )
 
 __all__ = [
@@ -163,6 +167,10 @@ __all__ = [
     "X402IntentIdentity",
     "X402IntentRecord",
     "X402IntentState",
+    "X402RenewalOutcome",
+    "X402StreamMode",
+    "X402StreamPhase",
+    "X402StreamStatus",
     "add_fees",
     "billable_fees",
     "reason_fits",

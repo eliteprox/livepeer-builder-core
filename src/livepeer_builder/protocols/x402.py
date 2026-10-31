@@ -6,7 +6,7 @@ Split out of ``protocols/__init__.py`` to keep that file under the line limit.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from uuid import UUID
 
 from livepeer_builder.contracts import (
@@ -15,6 +15,8 @@ from livepeer_builder.contracts import (
     X402Challenge,
     X402IntentIdentity,
     X402IntentRecord,
+    X402StreamMode,
+    X402StreamStatus,
 )
 
 
@@ -52,6 +54,35 @@ class X402PaymentAuthorizer(Protocol):
         """Journal the intent, then dispatch the signer; for a held key it replays the persisted payment
         instead of re-signing. A ``refused`` intent raises ``X402Refused``; a lost or mismatched signer
         answer raises ``X402SignerUnknown`` and leaves the intent ``unknown`` (no failover, no re-sign)."""
+        ...
+
+
+@runtime_checkable
+class X402StreamLifecycle(Protocol):
+    """Per-stream renewal owned by the payment provider (PROTOTYPE.md #3.3).
+
+    A metered stream renews only itself. A single-shot payment does not start a background renewal, and a
+    closed stream is never renewed. The status is what the consumer reads when a renewal is refused or the
+    signer answer is unknown; it carries no payment secret.
+    """
+
+    async def open_stream(
+        self,
+        identity: X402IntentIdentity,
+        challenge: X402Challenge,
+        credential: str | None = None,
+        *,
+        mode: X402StreamMode = "single-shot",
+    ) -> X402StreamStatus:
+        """Remember this stream. ``metered`` starts its own renewal task; ``single-shot`` does not."""
+        ...
+
+    async def close_stream(self, job_id: UUID, attempt: int) -> X402StreamStatus:
+        """Stop this stream's renewal. A later renewal of this stream does nothing."""
+        ...
+
+    def stream_status(self, job_id: UUID, attempt: int) -> X402StreamStatus:
+        """The last renewal outcome for this stream, with no payment secret."""
         ...
 
 

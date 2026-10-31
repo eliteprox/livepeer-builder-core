@@ -92,7 +92,8 @@ class BuilderEngine:
             asyncio.create_task(self._retention_loop(), name="lpb-retention"),
         ]
         if self.x402 is not None:
-            self.x402.start_renewals()  # PROTOTYPE.md #3.3: the renewal task is shielded (D34)
+            # Metered streams arm their own tasks when opened. This does not renew single-shot payments.
+            self.x402.start_renewals()
         _LOG.info(
             "engine started",
             extra={
@@ -114,7 +115,7 @@ class BuilderEngine:
                 await task
         self._tasks = []
         if self.x402 is not None:
-            await self.x402.stop_renewals()  # D34: never leave a leaked renewal task on close
+            await self.x402.stop_renewals()  # D34: close per-stream renewal tasks; do not leak them
         await self._resources.aclose()  # reverse order: clients before the store; failures are logged
         self._stopped = True
         _LOG.info("engine stopped", extra={"event": "engine.stopped"})

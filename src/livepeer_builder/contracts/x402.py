@@ -21,6 +21,12 @@ from livepeer_builder.contracts.payments import SecretRef
 # charged), then ``allowed`` (a validated payment) or ``refused`` (an explicit refusal, no money moved).
 X402IntentState = Literal["unknown", "allowed", "refused"]
 
+# A stream is metered only when the caller opens it that way. The default payment is single-shot and
+# must not grow a background renewal task.
+X402StreamMode = Literal["single-shot", "metered"]
+X402StreamPhase = Literal["open", "closed"]
+X402RenewalOutcome = Literal["none", "allowed", "refused", "unknown"]
+
 
 class X402IntentIdentity(Contract):
     """The caller-owned, deterministic idempotency key material: which job, which attempt, which renewal
@@ -99,6 +105,22 @@ class X402Authorization(Contract):
     intent_key: str
     payment: SecretStr | None
     signed_at: datetime
+
+
+class X402StreamStatus(Contract):
+    """One stream's renewal as the consumer can see it.
+
+    The provider owns this view. It names the stream, whether it is still open, and the last renewal
+    outcome. It never carries a payment header, credential, or secret reference.
+    """
+
+    job_id: UUID
+    attempt: Annotated[int, Field(gt=0)]
+    phase: X402StreamPhase
+    mode: X402StreamMode
+    cycle: int
+    renewal: X402RenewalOutcome
+    detail: str = ""
 
 
 class X402IntentRecord(Contract):

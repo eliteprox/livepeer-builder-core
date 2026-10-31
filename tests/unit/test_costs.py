@@ -750,3 +750,13 @@ def test_an_unresolved_x402_intent_keeps_the_cost_pending() -> None:
     assert final.status == "observed"
     assert final.attempts[0].cost_class == "uncertain"
     assert final.fees.fee_eth == Decimal(0)  # no applied rows and no charge
+
+    unknown_renewal = intent.model_copy(update={"cycle": 1, "intent_key": f"x402:{job.id}:1:1"})
+    visible = classify(job, [], [allowed, unknown_renewal])
+    assert visible.status == "pending"
+    assert visible.attempts[0].cost_class == "uncertain"  # the unknown renewal is the attempt's word
+
+    refused_renewal = allowed.model_copy(update={"cycle": 1, "state": "refused", "payment_ref": None})
+    kept = classify(job, [], [allowed, refused_renewal])
+    assert kept.status == "pending"  # the refused cycle does not erase the allowed charge
+    assert kept.attempts[0].cost_class == "pending"

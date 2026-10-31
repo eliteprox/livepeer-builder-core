@@ -2,10 +2,20 @@
 
 ## Status
 
-Owner: local GitLab/Paperclip pilot. Draft repair published (MR!2, commit 073fc66a). All local
-gates are green (ruff, mypy, 1566 tests @ 97.47% total, diff-cover 95% vs origin/releases/m3,
-docs, gen-docs --check, smoke). The per-stream/metered renewal lifecycle and usage integration are
-**not implemented**; the provider still uses the global `start_renewals`/`stop_renewals` loop.
+Owner: local GitLab/Paperclip pilot. ELI-122 continues MR!2 (`engineer/issue-68-boundary`, base
+`origin/releases/m3`). Recovered commits `073fc66` and `c431a30` stay in the history.
+
+Local gates on this revision: `ruff check`, `ruff format --check`, `mypy`, full `pytest` (1577 passed,
+54 skipped, total coverage 97.46%), `scripts/check_coverage.py` (all layer floors ok), `diff-cover`
+95% against `origin/releases/m3`, `scripts/check_docs.py`, `lpb gen-docs --check`, and `lpb smoke`.
+
+Provider-owned per-stream renewal is implemented. A persistent stream arms its own renewal task. A
+default single-shot payment does not. Closing a stream cancels that stream only. A refused or unknown
+renewal is on `X402StreamStatus` (no payment secret); an unknown renewal keeps the attempt cost
+uncertain, and a refused renewal does not erase an earlier allowed cycle.
+
+Real cryptographic signing, facilitator settlement, and current Livepeer endpoint interoperability are
+out of scope. GitHub stays read-only. Tests use fake signers and no live funds.
 
 ## Goal
 
@@ -16,10 +26,10 @@ coverage, SonarQube and Paperclip review/fix iterations. GitHub remains read-onl
 
 - [x] Durable, caller-scoped intents before signing; idempotency and crash recovery.
 - [x] Distinguish pre-dispatch refusal from uncertain signer outcomes; no unsafe failover.
-- [ ] Separate HTTP/SSE transport and payment-provider renewal lifecycle.
+- [x] Separate HTTP/SSE transport and payment-provider renewal lifecycle.
 - [x] Preserve paid-attempt caps, orchestrator exclusions and delivered/failed cost separation.
-- [x] Regression tests, coverage, SQLite/Postgres, typing and scanner gates pass.
-- [x] Review findings are resolved through GitLab merge requests.
+- [x] Regression tests, coverage, SQLite, typing and local scanner gates pass. PostgreSQL and SonarQube remain GitLab CI.
+- [ ] Review findings are resolved through GitLab merge requests. Independent review of this head is still required. Do not self-approve or merge.
 
 ## Progress
 
@@ -35,15 +45,15 @@ coverage, SonarQube and Paperclip review/fix iterations. GitHub remains read-onl
 - [x] Added x402 validation/error-branch tests: malformed V2 headers (`parse_x402_challenge`),
   unsupported requirement selection (`_select_requirement`), and authorizer error paths
   (signer with `payment=None`, mismatched intent-key reply, failed secret write, missing stored value).
-  Changed-line (diff) coverage went from 88% to 95% vs origin/releases/m3.
-- [x] All local gates green: `uv sync --all-extras --frozen`, `ruff check`, `ruff format --check`,
-  `mypy`, `pytest --cov --cov-report=xml --cov-report=json` (1566 passed, 97.47%),
-  `scripts/check_coverage.py`, `diff-cover --compare-branch=origin/releases/m3 --fail-under=90`,
-  `scripts/check_docs.py`, `lpb gen-docs --check`, `lpb smoke`.
-- [ ] Paperclip implementation and independent review.
-- [ ] Per-stream/metered renewal lifecycle and usage integration are NOT implemented; the provider
-  still relies on the global `start_renewals`/`stop_renewals` background loop. Do not describe them as
-  done.
+- [x] Per-stream renewal: `X402PaymentProvider.open_stream` / `close_stream` / `renew_stream`.
+  Metered streams renew only themselves. Single-shot payments and closed streams are not renewed in
+  the background. `X402StreamStatus` shows `allowed`, `refused`, or `unknown` without a payment secret.
+  The transport opens that lifecycle for `open_with_intent` and closes it in `aclose`. Cost
+  classification treats an unknown renewal as uncertain and keeps an earlier allowed cycle pending
+  when a later cycle was refused.
+- [x] Local gates above passed on this working tree before publication.
+- [ ] Independent review of the published MR head. PostgreSQL and SonarQube still run in GitLab CI;
+  this local run did not execute those services.
 
 ## Decision log
 
@@ -55,3 +65,5 @@ coverage, SonarQube and Paperclip review/fix iterations. GitHub remains read-onl
   legacy correlation path and clearly mark that production interoperability gap.
   Do not fake remote idempotency or claim authorization always delays settlement.
 - Use deterministic fake signers/facilitators in tests; never provision or fund real allocations.
+- The engine does not start a global renewal loop over every allowed intent. Renewal tasks exist
+  only for streams opened as `metered` (`runner.mode == "persistent"`).

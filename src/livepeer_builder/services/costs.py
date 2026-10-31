@@ -320,7 +320,6 @@ def classify(job: Job, rows: Sequence[UsageRow], intents: Sequence[X402IntentRec
     applied = [row for row in rows if row.status == "applied"]
     running = job.state not in _ENDED
     last = max((attempt.number for attempt in job.attempts), default=0)
-    intent_by_attempt = {record.attempt: record for record in intents}
     unresolved_x402 = any(record.state in ("unknown", "allowed") for record in intents)
     attempts: list[AttemptCost] = []
     for attempt in job.attempts:
@@ -355,7 +354,7 @@ def classify(job: Job, rows: Sequence[UsageRow], intents: Sequence[X402IntentRec
                 AttemptCost(attempt_number=attempt.number, cost_class="pending", fees=fees_of(mine))
             )
             continue
-        intent = intent_by_attempt.get(attempt.number)
+        intent = _x402_intent_for_attempt(intents, attempt.number)
         if intent is not None and intent.state in ("unknown", "allowed"):
             # An unresolved x402 intent keeps its attempt unsettled: ``unknown`` may have charged
             # (``uncertain``), ``allowed`` settles later (``pending``) (ISS-68 review, priority B).
@@ -403,6 +402,27 @@ def classify(job: Job, rows: Sequence[UsageRow], intents: Sequence[X402IntentRec
         updated_at=None,
         billable=billable_fees(attempts),
     )
+
+
+def _x402_intent_for_attempt(
+    intents: Sequence[X402IntentRecord], attempt_number: int
+) -> X402IntentRecord | None:
+    """The intent that classifies one attempt.
+
+    An unknown renewal is louder than an earlier allowed cycle: the signer may have charged and the
+    consumer must not see a settled cost. A refused renewal does not erase an earlier allowed cycle, so
+    that cycle stays pending until its usage arrives. A refused-only attempt falls through as no charge.
+    """
+    mine = [record for record in intents if record.attempt == attempt_number]
+    if not mine:
+        return None
+    unknown = [record for record in mine if record.state == "unknown"]
+    if unknown:
+        return max(unknown, key=lambda record: record.cycle)
+    allowed = [record for record in mine if record.state == "allowed"]
+    if allowed:
+        return max(allowed, key=lambda record: record.cycle)
+    return max(mine, key=lambda record: record.cycle)
 
 
 def summarize(start: datetime, end: datetime, costs: Iterable[tuple[str, JobCost]]) -> CostSummary:

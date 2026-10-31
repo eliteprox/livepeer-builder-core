@@ -244,6 +244,25 @@ async def test_an_open_stream_pays_then_streams(x402_net: X402Net, ident: X402In
     assert stream.manifest_ids == ()  # the x402 correlation is the intent key, not a per-manifest session
     assert b"".join(chunks) == b"hello world"
     assert x402_net.paid_requests == 1
+    status = authorizer.stream_status(ident.job_id, ident.attempt)
+    assert status.mode == "single-shot" and status.phase == "closed"  # aclose closed it
+    assert authorizer.renewal_task_count() == 0
+
+
+async def test_a_persistent_stream_renews_only_while_open(
+    x402_net: X402Net, ident: X402IntentIdentity
+) -> None:
+    request = JobRequest(app="example/echo", path="/run", payload={"x": 1}, first_byte_timeout_s=5.0)
+    authorizer = X402PaymentProvider(Signer(), FakePaymentIntents(), FixedClock(), MemorySecretStore())
+    transport = X402RunnerTransport(authorizer)
+    runner = x402_net.runner().model_copy(update={"mode": "persistent"})
+    stream = await transport.open_with_intent(runner, request, "cred", None, identity=ident)
+    status = authorizer.stream_status(ident.job_id, ident.attempt)
+    assert status.mode == "metered" and status.phase == "open"
+    assert authorizer.renewal_task_count() == 1
+    await stream.aclose()
+    closed = authorizer.stream_status(ident.job_id, ident.attempt)
+    assert closed.phase == "closed" and authorizer.renewal_task_count() == 0
 
 
 def _valid_requirement() -> dict[str, object]:

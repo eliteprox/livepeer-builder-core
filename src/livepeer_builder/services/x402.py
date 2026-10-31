@@ -23,7 +23,9 @@ ISS-68 review (priorities A and C):
 
 import asyncio
 import contextlib
-from decimal import Decimal
+from dataclasses import dataclass
+from typing import Literal
+from uuid import UUID
 
 from pydantic import SecretStr
 
@@ -32,6 +34,8 @@ from livepeer_builder.contracts import (
     X402Challenge,
     X402IntentIdentity,
     X402IntentRecord,
+    X402StreamMode,
+    X402StreamStatus,
 )
 from livepeer_builder.errors import NotFound, X402ChallengeMismatch, X402Refused, X402SignerUnknown
 from livepeer_builder.protocols import Clock, SecretStore, X402IntentRepo, X402Signer
@@ -61,7 +65,7 @@ class X402PaymentProvider:
         self._clock = clock
         self._secrets = secrets
         self._renewal_interval_s = renewal_interval_s
-        self._renewal_task: asyncio.Task[None] | None = None
+        self._streams: dict[tuple[UUID, int], _Stream] = {}
 
     async def authorize(
         self, identity: X402IntentIdentity, challenge: X402Challenge, credential: str | None = None
@@ -157,43 +161,160 @@ class X402PaymentProvider:
         )
         return await self.authorize(next_identity, challenge, credential)
 
+    async def open_stream(
+        self,
+        identity: X402IntentIdentity,
+        challenge: X402Challenge,
+        credential: str | None = None,
+        *,
+        mode: X402StreamMode = "single-shot",
+    ) -> X402StreamStatus:
+        """Bind one stream to the provider. Only a metered stream starts a renewal task."""
+        await self.authorize(identity, challenge, credential)
+        key = (identity.job_id, identity.attempt)
+        session = self._streams.get(key)
+        if session is None or session.phase == "closed":
+            session = _Stream(
+                identity=identity,
+                challenge=challenge,
+                credential=credential,
+                mode=mode,
+                phase="open",
+                renewal="none",
+                detail="",
+            )
+            self._streams[key] = session
+        else:
+            session.identity = identity
+            session.challenge = challenge
+            session.credential = credential
+            session.mode = mode
+            session.phase = "open"
+        if mode == "metered":
+            self._arm(key)
+        return _status(session)
+
+    async def close_stream(self, job_id: UUID, attempt: int) -> X402StreamStatus:
+        """Close this stream and cancel its renewal. Other streams are left alone."""
+        session = self._require(job_id, attempt)
+        session.phase = "closed"
+        await self._cancel(session)
+        session.detail = "the stream is closed"
+        return _status(session)
+
+    def stream_status(self, job_id: UUID, attempt: int) -> X402StreamStatus:
+        """The consumer-visible renewal outcome. The payment value is not on this object."""
+        return _status(self._require(job_id, attempt))
+
+    async def renew_stream(self, job_id: UUID, attempt: int) -> X402StreamStatus:
+        """Renew this open metered stream once. A closed or single-shot stream is not re-signed."""
+        session = self._require(job_id, attempt)
+        if session.phase == "closed":
+            session.detail = "a closed stream is not renewed"
+            raise X402Refused(session.detail)
+        if session.mode != "metered":
+            session.detail = "a single-shot payment is not renewed"
+            return _status(session)
+        try:
+            await self.renew(session.identity, session.challenge, session.credential)
+        except X402Refused:
+            session.renewal = "refused"
+            session.detail = "the signer refused the renewal"
+            raise
+        except X402SignerUnknown:
+            session.renewal = "unknown"
+            session.detail = "the renewal is unknown; the signer may have charged"
+            raise
+        except X402ChallengeMismatch:
+            session.renewal = "refused"
+            session.detail = "the renewal challenge did not match the open stream"
+            raise
+        session.renewal = "allowed"
+        session.detail = ""
+        session.identity = X402IntentIdentity(
+            job_id=session.identity.job_id,
+            attempt=session.identity.attempt,
+            cycle=session.identity.cycle + 1,
+        )
+        return _status(session)
+
+    def renewal_task_count(self) -> int:
+        """How many metered streams currently have a live renewal task."""
+        count = 0
+        for session in self._streams.values():
+            task = session.task
+            if task is not None and not task.done():
+                count += 1
+        return count
+
     def start_renewals(self) -> None:
-        """Start the shielded renewal task (PROTOTYPE.md #3.3): it keeps a stream's voucher renewed and
-        survives a host that cancels every other await (D34, utils.run_shielded)."""
-        if self._renewal_task is None:
-            self._renewal_task = spawn_shielded(self._renewal_loop())
+        """Resume renewal tasks for streams already opened as metered.
+
+        This does not scan every allowed intent. A default single-shot payment has no stream task, and a
+        closed stream is not armed (PROTOTYPE.md #3.3)."""
+        for key, session in self._streams.items():
+            if session.phase == "open" and session.mode == "metered":
+                self._arm(key)
 
     async def stop_renewals(self) -> None:
-        """Stop the renewal task: cancel it and wait for the in-flight renewal to finish, so a close
-        never leaves a leaked task (D34)."""
-        task, self._renewal_task = self._renewal_task, None
+        """Close every open stream's renewal task so an engine stop cannot leak one (D34)."""
+        for session in list(self._streams.values()):
+            session.phase = "closed"
+            await self._cancel(session)
+
+    def _require(self, job_id: UUID, attempt: int) -> "_Stream":
+        session = self._streams.get((job_id, attempt))
+        if session is None:
+            raise NotFound("no x402 stream is open for this attempt")
+        return session
+
+    def _arm(self, key: tuple[UUID, int]) -> None:
+        session = self._streams[key]
+        if session.task is not None and not session.task.done():
+            return
+        session.task = spawn_shielded(self._stream_loop(key))
+
+    async def _cancel(self, session: "_Stream") -> None:
+        task, session.task = session.task, None
         if task is not None:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def _renewal_loop(self) -> None:
-        """Renew each ``allowed`` intent's voucher every ``renewal_interval_s`` (PROTOTYPE.md #3.3). A renewal
-        failure (signer error) leaves the current cycle valid: the intent's state does not change."""
+    async def _stream_loop(self, key: tuple[UUID, int]) -> None:
+        """Renew only this stream. A refusal or an unknown answer stops the loop and stays visible."""
         while True:
             await asyncio.sleep(self._renewal_interval_s)
-            for record in await self._intents.list_renewals():
-                identity = X402IntentIdentity(
-                    job_id=record.job_id, attempt=record.attempt, cycle=record.cycle
-                )
-                challenge = _challenge_of(record)
-                try:
-                    await self.renew(identity, challenge, None)
-                except (X402Refused, X402SignerUnknown, X402ChallengeMismatch):
-                    # A refused or unknown renewal leaves the current cycle valid (PROTOTYPE.md #3.3).
-                    continue
+            session = self._streams.get(key)
+            if session is None or session.phase != "open" or session.mode != "metered":
+                return
+            try:
+                await self.renew_stream(key[0], key[1])
+            except (X402Refused, X402SignerUnknown, X402ChallengeMismatch):
+                return
 
 
-def _challenge_of(record: X402IntentRecord) -> X402Challenge:
-    return X402Challenge(
-        origin=record.origin,
-        pay_to=record.pay_to,
-        asset=record.asset,
-        amount=Decimal(record.amount),
-        nonce=record.nonce,
+@dataclass
+class _Stream:
+    """Provider-owned stream state. The credential stays here and never on ``X402StreamStatus``."""
+
+    identity: X402IntentIdentity
+    challenge: X402Challenge
+    credential: str | None
+    mode: X402StreamMode
+    phase: Literal["open", "closed"]
+    renewal: Literal["none", "allowed", "refused", "unknown"]
+    detail: str
+    task: asyncio.Task[None] | None = None
+
+
+def _status(session: _Stream) -> X402StreamStatus:
+    return X402StreamStatus(
+        job_id=session.identity.job_id,
+        attempt=session.identity.attempt,
+        phase=session.phase,
+        mode=session.mode,
+        cycle=session.identity.cycle,
+        renewal=session.renewal,
+        detail=session.detail,
     )
