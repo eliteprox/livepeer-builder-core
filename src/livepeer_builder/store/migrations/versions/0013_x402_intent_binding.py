@@ -1,7 +1,7 @@
 """Bind x402 intents to their challenge and to the encrypted payment secret (ISS-68 review, priority C).
 
-Revision ID: 0012
-Revises: 0011
+Revision ID: 0013
+Revises: 0012
 Create Date: 2026-10-30
 
 ``challenge_digest`` is the canonical SHA-256 digest of the 402 challenge journaled before dispatch:
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0012"
-down_revision: str | None = "0011"
+revision: str = "0013"
+down_revision: str | None = "0012"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

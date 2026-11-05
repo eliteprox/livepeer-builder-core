@@ -235,8 +235,8 @@ operations = Table(
     Column("completed_at", UTCDateTime, nullable=True),
 )
 
-# -- 0011: x402 payment intents (ISS-68) --------------------------------------------------------------
-# -- 0012: bind the intent to the challenge digest and the encrypted secret reference (ISS-68 review)
+# -- 0012: x402 payment intents (ISS-68) --------------------------------------------------------------
+# -- 0013: bind the intent to the challenge digest and the encrypted secret reference (ISS-68 review)
 
 # One durable x402 intent per (job, attempt, renewal cycle): the primary key is the unique constraint the
 # caller-owned intent_key is stored under, so two concurrent authorizes for one intent cannot both win.

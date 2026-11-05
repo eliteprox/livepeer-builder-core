@@ -1,7 +1,7 @@
 """The x402 payment intent ledger (ISS-68): one durable intent per (job, attempt, renewal cycle).
 
-Revision ID: 0011
-Revises: 0010
+Revision ID: 0012
+Revises: 0011
 Create Date: 2026-10-30
 
 A caller-owned idempotency key (job_id, attempt_number, cycle) is stored under a unique ``intent_key``,
@@ -18,8 +18,8 @@ from alembic import op
 
 from livepeer_builder.store.schema import UTCDateTime
 
-revision: str = "0011"
-down_revision: str | None = "0010"
+revision: str = "0012"
+down_revision: str | None = "0011"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
