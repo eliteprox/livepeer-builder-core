@@ -20,6 +20,7 @@ from livepeer_builder.adapters.runner_call import SdkRunnerStream
 from livepeer_builder.adapters.sdk import HttpDiscoverySource, SdkRunnerTransport
 from livepeer_builder.adapters.secrets import EncryptedDbSecretStore, RoutingSecretStore, SettingsSecretStore
 from livepeer_builder.adapters.static import StaticDiscoverySource
+from livepeer_builder.adapters.x402 import X402RunnerTransport
 from livepeer_builder.contracts import (
     ActorContext,
     Allowance,
@@ -62,6 +63,7 @@ DEFAULTS: dict[str, tuple[type, ...]] = {
     "SelectionPolicy": (MostCapacityFirst,),
     "RunnerTransport": (SdkRunnerTransport,),
     "StreamingRunnerTransport": (SdkRunnerTransport,),
+    "IntentAwareTransport": (X402RunnerTransport,),
     "RunnerStream": (SdkRunnerStream,),
     "CredentialResolver": (PaymentsService,),
     "AllocationManager": (BatteriesClient,),

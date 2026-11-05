@@ -1,0 +1,54 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+stages: [test, quality]
+default:
+  tags: [core-x402]
+  before_script:
+    - uv sync --all-extras --frozen --python 3.12
+variables:
+  GIT_DEPTH: "0"
+  UV_CACHE_DIR: /home/scanner/uv-cache
+checks:
+  stage: test
+  timeout: 30m
+  script:
+    - uv run ruff check .
+    - uv run ruff format --check .
+    - uv run mypy
+    - uv run python scripts/check_docs.py
+    - uv run lpb gen-docs --check
+    - uv run pytest -q --cov --cov-report=xml --cov-report=json --cov-report=term
+    - uv run python scripts/check_coverage.py
+    - |
+      if [ "$CI_PIPELINE_SOURCE" = merge_request_event ]; then
+        uv run diff-cover coverage.xml --compare-branch="origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --fail-under=90
+      fi
+  artifacts:
+    when: always
+    paths: [coverage.xml, coverage.json]
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    expire_in: 14 days
+postgres:
+  stage: test
+  timeout: 20m
+  script:
+    - uv run pytest tests/store -q -m "postgres or not postgres"
+sonarqube:
+  stage: quality
+  before_script: []
+  dependencies: [checks]
+  script:
+    - |
+      args=(-Dsonar.qualitygate.wait=true -Dsonar.qualitygate.timeout=600 -Dsonar.scm.revision="$CI_COMMIT_SHA")
+      if [ "$CI_PIPELINE_SOURCE" = merge_request_event ]; then
+        args+=(-Dsonar.pullrequest.key="$CI_MERGE_REQUEST_IID" -Dsonar.pullrequest.branch="$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME" -Dsonar.pullrequest.base="$CI_MERGE_REQUEST_TARGET_BRANCH_NAME")
+      else
+        args+=(-Dsonar.branch.name="$CI_COMMIT_REF_NAME")
+      fi
+      /opt/sonar-scanner/bin/sonar-scanner "${args[@]}"

@@ -178,3 +178,19 @@ class RunnerCallError(EngineError):
         self.payment_unknown = payment_unknown
         self.timings = timings
         self.reason = reason
+
+
+class X402Refused(EngineError):
+    """The x402 signer explicitly refused the payment (HTTP 400/401/402/403/480/481): no money moved.
+    The intent is terminally ``refused``; a repeat must not re-sign (ISS-68)."""
+
+
+class X402SignerUnknown(EngineError):
+    """The x402 signer was asked and gave no validated answer (a lost or malformed reply, a 5xx, or a
+    cancel after dispatch). The intent stays ``unknown``: it may have charged, so nobody else is paid
+    (ISS-68)."""
+
+
+class X402ChallengeMismatch(EngineError):
+    """A repeat of an existing x402 intent carries a different origin or payment requirement. Fails
+    loudly instead of silently reusing (ISS-68)."""

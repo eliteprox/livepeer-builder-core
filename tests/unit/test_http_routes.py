@@ -360,7 +360,12 @@ async def test_a_raw_body_arrives_as_base64_over_rest(  # type: ignore[no-untype
     seen: list[JobRequest] = []
     call = transport.call
 
-    async def capture(runner, request, credential, on_signed=None):  # type: ignore[no-untyped-def]
+    async def capture(
+        runner,
+        request,
+        credential,
+        on_signed=None,  # type: ignore[no-untyped-def]
+    ):
         seen.append(request)
         return await call(runner, request, credential, on_signed)
 

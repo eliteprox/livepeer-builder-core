@@ -32,6 +32,7 @@ from livepeer_builder.contracts import (
 from livepeer_builder.store import actors, cost_reads
 from livepeer_builder.store import operation_refs as refs
 from livepeer_builder.store import schema as t
+from livepeer_builder.store.intents import SqlPaymentIntents
 from livepeer_builder.store.keys import SqlKeys
 from livepeer_builder.store.maintenance import SqlMaintenance
 from livepeer_builder.store.matching import (
@@ -68,7 +69,7 @@ def create_engine(url: str) -> AsyncEngine:
     return engine
 
 
-class SqlStore(SqlKeys, SqlOperations):
+class SqlStore(SqlKeys, SqlOperations, SqlPaymentIntents):
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
         self.maintenance = SqlMaintenance(engine)

@@ -20,8 +20,9 @@ from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.pool import StaticPool
 
-from livepeer_builder.contracts import Job, JobCost, UsageRow
+from livepeer_builder.contracts import Job, JobCost, UsageRow, X402IntentRecord
 from livepeer_builder.store import schema as t
+from livepeer_builder.store.intents import _record
 from livepeer_builder.store.matching import in_window, jobs_not_covered, projection_current
 from livepeer_builder.store.rows import chunks, load_jobs, projection, usage_row
 
@@ -96,6 +97,13 @@ class SqlCostSnapshot:
 
     async def usage_for_payment_sessions(self, payment_session_ids: Sequence[str]) -> list[UsageRow]:
         return await usage_for_payment_sessions(self._conn, payment_session_ids)
+
+    async def x402_intents_for_job(self, job_id: UUID) -> list[X402IntentRecord]:
+        """Every durable x402 intent for one job: cost evidence keeps an unresolved intent ``pending``
+        (ISS-68 review, priority B)."""
+        query = select(t.payment_intents).where(t.payment_intents.c.job_id == str(job_id))
+        rows = (await self._conn.execute(query)).mappings().all()
+        return [_record(row) for row in rows]
 
     async def unattributed_usage(self, allocation_id: str) -> list[UsageRow]:
         return await unattributed_usage(self._conn, allocation_id)

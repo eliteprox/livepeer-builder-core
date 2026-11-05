@@ -41,6 +41,11 @@ classDiagram
         +async call(runner, request, credential, on_signed) RunnerReply
         +async open(runner, request, credential, on_signed) RunnerStream
     }
+    class IntentAwareTransport {
+        <<interface>>
+        +async call_with_intent(runner, request, credential, on_signed, identity) RunnerReply
+        +async open_with_intent(runner, request, credential, on_signed, identity) RunnerStream
+    }
     class RunnerStream {
         <<interface>>
         +content_type str
@@ -131,6 +136,7 @@ classDiagram
     class SqlStore
     class StaticDiscoverySource
     class SystemClock
+    class X402RunnerTransport
     Authenticator <|.. ApiKeyAuthenticator
     Authenticator <|.. AuthenticatorChain
     Authenticator <|.. JwtBearerAuthenticator
@@ -143,6 +149,7 @@ classDiagram
     SelectionPolicy <|.. MostCapacityFirst
     RunnerTransport <|.. SdkRunnerTransport
     StreamingRunnerTransport <|.. SdkRunnerTransport
+    IntentAwareTransport <|.. X402RunnerTransport
     RunnerStream <|.. SdkRunnerStream
     CredentialResolver <|.. PaymentsService
     AllocationManager <|.. BatteriesClient
@@ -172,6 +179,7 @@ classDiagram
 | `SelectionPolicy` | `MostCapacityFirst` | `livepeer_builder.services.discovery` |
 | `RunnerTransport` | `SdkRunnerTransport` | `livepeer_builder.adapters.sdk` |
 | `StreamingRunnerTransport` | `SdkRunnerTransport` | `livepeer_builder.adapters.sdk` |
+| `IntentAwareTransport` | `X402RunnerTransport` | `livepeer_builder.adapters.x402` |
 | `RunnerStream` | `SdkRunnerStream` | `livepeer_builder.adapters.runner_call` |
 | `CredentialResolver` | `PaymentsService` | `livepeer_builder.services.payments` |
 | `AllocationManager` | `BatteriesClient` | `livepeer_builder.adapters.batteries` |
