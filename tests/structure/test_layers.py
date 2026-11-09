@@ -57,7 +57,13 @@ CONFINED: dict[str, tuple[str, ...]] = {
     "livepeer_gateway": ("adapters/sdk.py", "adapters/runner_call.py", "adapters/signer_failures.py"),
     "aiohttp": ("adapters/runner_call.py", "adapters/signer_failures.py"),
     # sdk.py fetches /discovery itself so price_usd stays a Decimal (livepeer-python-gateway#88).
-    "httpx": ("adapters/batteries.py", "adapters/jwt.py", "adapters/sdk.py", "discovery/"),
+    "httpx": (
+        "adapters/batteries.py",
+        "adapters/jwt.py",
+        "adapters/sdk.py",
+        "adapters/x402.py",
+        "discovery/",
+    ),
     "jwt": ("adapters/jwt.py",),
     "cryptography": ("adapters/secrets.py",),
     "sqlalchemy": ("store/",),

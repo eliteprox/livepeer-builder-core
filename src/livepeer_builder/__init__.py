@@ -76,6 +76,9 @@ from livepeer_builder.errors import (
     ProviderUnavailable,
     RunnerCallError,
     UnsupportedForBackend,
+    X402ChallengeMismatch,
+    X402Refused,
+    X402SignerUnknown,
 )
 from livepeer_builder.runtime import BuilderEngine, JobStream
 from livepeer_builder.runtime.assembly import UNSET, ApiKeys, Decorate, EngineParts, EngineSupply
@@ -154,5 +157,8 @@ __all__ = [
     "StreamingApi",
     "SyncReport",
     "UnsupportedForBackend",
+    "X402ChallengeMismatch",
+    "X402Refused",
+    "X402SignerUnknown",
     "generate_secret_key",
 ]
