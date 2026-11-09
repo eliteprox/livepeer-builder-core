@@ -68,6 +68,7 @@ class EngineSettings(Contract):
     stream_open_grace_s: float = Field(default=5.0, gt=0)  # how far past its deadline an open may run
 
     # payments
+    x402: bool = False  # LPB_X402: opt-in x402 payment provider (ISS-68); off by default
     allocation_mode: AllocationMode = "per_actor"
     default_currency: Currency = "USD"
     shared_payment_key: SecretStr | None = None  # per_application mode: the one lpg_ key

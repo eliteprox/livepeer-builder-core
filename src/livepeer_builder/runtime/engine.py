@@ -49,6 +49,7 @@ class BuilderEngine:
         self.admission = services.admission
         self.events = services.events
         self.sessions = services.sessions
+        self.x402 = services.x402  # the x402 payment provider (LPB_X402), off by default
         self._own_authenticators = services.own_authenticators  # the deployment's, tried before API keys
         self._resources = resources or contextlib.AsyncExitStack()
         self._stopped = False
@@ -90,6 +91,9 @@ class BuilderEngine:
             asyncio.create_task(self.costs.run(self._stop), name="lpb-cost-sync"),
             asyncio.create_task(self._retention_loop(), name="lpb-retention"),
         ]
+        if self.x402 is not None:
+            # Metered streams arm their own tasks when opened. This does not renew single-shot payments.
+            self.x402.start_renewals()
         _LOG.info(
             "engine started",
             extra={
@@ -110,6 +114,8 @@ class BuilderEngine:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
         self._tasks = []
+        if self.x402 is not None:
+            await self.x402.stop_renewals()  # D34: close per-stream renewal tasks; do not leak them
         await self._resources.aclose()  # reverse order: clients before the store; failures are logged
         self._stopped = True
         _LOG.info("engine stopped", extra={"event": "engine.stopped"})

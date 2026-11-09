@@ -10,6 +10,7 @@ from livepeer_builder.testing.fake_engine import FakeEngine
 from livepeer_builder.testing.fake_stream import FakeJobStream
 from livepeer_builder.testing.fakes import (
     FakeAllocationManager,
+    FakePaymentIntents,
     FakeUsageSource,
     FixedClock,
     MemorySecretStore,
@@ -26,6 +27,7 @@ __all__ = [
     "FakeAllocationManager",
     "FakeEngine",
     "FakeJobStream",
+    "FakePaymentIntents",
     "FakeUsageSource",
     "FixedClock",
     "MemorySecretStore",

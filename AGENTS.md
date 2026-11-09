@@ -86,3 +86,9 @@ deploy/railway/     Railway Batteries, signer, and engine; branch pushes deploy 
 - a change would alter an accepted decision in `docs/design-docs/m2-decisions.md`;
 - an upstream repository (SDK, node, Batteries) needs a change;
 - money could move: provisioning, funding, revocation semantics.
+## Local GitLab prototype authorization
+
+The user explicitly authorized Paperclip engineers to implement issue 68 and fix
+findings through MRs in code/livepeer-builder-core-x402. Commits and branch pushes
+for those MRs are authorized here. Never push to GitHub, move real money, or deploy
+production changes. Keep CI, coverage thresholds and quality gates intact.
